@@ -28,9 +28,9 @@ class Diginetica_arg():
     validation = True
     valid_portion = 0.1
     # SSL Args
-    ssl_weight = 0.1
-    ssl_temperature = 0.07
-    ssl_item_drop_prob = 0.2
+    ssl_weight = 0.2
+    ssl_temperature = 0.045
+    ssl_item_drop_prob = 0.4
     ssl_projection_dim = 50 # Example, hiddenSize // 2
 
 
@@ -50,9 +50,9 @@ class Yoochoose_arg():
     validation = True
     valid_portion = 0.1
     # SSL Args
-    ssl_weight = 0.12
-    ssl_temperature = 0.1
-    ssl_item_drop_prob = 0.1
+    ssl_weight = 0.2
+    ssl_temperature = 0.045
+    ssl_item_drop_prob = 0.4
     ssl_projection_dim = 128 # Example, hiddenSize // 2
 
 
