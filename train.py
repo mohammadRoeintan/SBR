@@ -33,7 +33,7 @@ class Diginetica_arg():
     ssl_temperature = 0.07
     ssl_item_drop_prob = 0.2
     ssl_projection_dim = 50 # Example, hiddenSize // 2
-
+    n_gpu = 0 # تعداد پیش‌فرض GPU
 
 # Default args used for Yoochoose1_64
 class Yoochoose_arg():
@@ -55,7 +55,7 @@ class Yoochoose_arg():
     ssl_temperature = 0.07
     ssl_item_drop_prob = 0.2
     ssl_projection_dim = 60 # Example, hiddenSize // 2
-
+    n_gpu = 0 # تعداد پیش‌فرض GPU
 
 def main(opt):
     model_save_dir = 'saved_ssl/'
