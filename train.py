@@ -42,7 +42,7 @@ class Yoochoose_arg():
     epoch = 30
     lr = 0.001
     lr_dc = 0.1
-    lr_dc_step = 3
+    lr_dc_step = 4
     l2 = 1e-5
     step = 1
     patience = 10
@@ -52,7 +52,7 @@ class Yoochoose_arg():
     # SSL Args
     ssl_weight = 0.12
     ssl_temperature = 0.1
-    ssl_item_drop_prob = 0.2
+    ssl_item_drop_prob = 0.1
     ssl_projection_dim = 128 # Example, hiddenSize // 2
 
 
