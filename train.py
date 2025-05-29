@@ -24,7 +24,7 @@ class Diginetica_arg():
     l2 = 1e-5
     step = 1 # GNN step
     patience = 10
-    nonhybrid = True # For model.compute_scores
+    nonhybrid = False  # For model.compute_scores
     validation = True
     valid_portion = 0.1
     # SSL Args
@@ -38,7 +38,7 @@ class Diginetica_arg():
 class Yoochoose_arg():
     dataset = 'yoochoose1_64'
     batchSize = 75 # Original: 75
-    hiddenSize = 120 # Original: 120
+    hiddenSize = 256 # Original: 120
     epoch = 30
     lr = 0.001
     lr_dc = 0.1
@@ -46,14 +46,14 @@ class Yoochoose_arg():
     l2 = 1e-5
     step = 1
     patience = 10
-    nonhybrid = True
+    nonhybrid = False 
     validation = True
     valid_portion = 0.1
     # SSL Args
-    ssl_weight = 0.1
-    ssl_temperature = 0.07
+    ssl_weight = 0.12
+    ssl_temperature = 0.1
     ssl_item_drop_prob = 0.2
-    ssl_projection_dim = 60 # Example, hiddenSize // 2
+    ssl_projection_dim = 128 # Example, hiddenSize // 2
 
 
 def main(opt):
