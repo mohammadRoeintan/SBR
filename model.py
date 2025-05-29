@@ -12,7 +12,7 @@ from torch import nn
 from torch.nn import Module, Parameter
 import torch.nn.functional as F
 
-from agc import AGC
+# from agc import AGC # حذف شده است
 
 
 class Attention_GNN(Module):
@@ -88,7 +88,7 @@ class Attention_SessionGraph(Module):
         self.loss_function = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(
             self.parameters(), lr=opt.lr, weight_decay=opt.l2)
-        self.agc_optimizer = AGC(self.parameters(), self.optimizer, model=self)
+        # self.agc_optimizer = AGC(self.parameters(), self.optimizer, model=self) # حذف شده است
         self.scheduler = torch.optim.lr_scheduler.StepLR(
             self.optimizer, step_size=opt.lr_dc_step, gamma=opt.lr_dc)
         self.reset_parameters()
@@ -186,7 +186,7 @@ def train_test(model, train_data, test_data):
         targets = to_cuda(torch.Tensor(targets).long())
         loss = model.loss_function(scores, targets - 1)
         loss.backward()
-        model.optimizer.step()
+        model.optimizer.step() # از model.optimizer استفاده می‌شود، نه model.agc_optimizer
         total_loss += loss.item()
 
         if j % int(len(slices) / 5 + 1) == 0:
