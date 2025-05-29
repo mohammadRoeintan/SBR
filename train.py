@@ -38,7 +38,7 @@ class Diginetica_arg():
 class Yoochoose_arg():
     dataset = 'yoochoose1_64'
     batchSize = 75 # Original: 75
-    hiddenSize = 256 # Original: 120
+    hiddenSize = 100 # Original: 120
     epoch = 30
     lr = 0.001
     lr_dc = 0.1
@@ -53,7 +53,7 @@ class Yoochoose_arg():
     ssl_weight = 0.2
     ssl_temperature = 0.045
     ssl_item_drop_prob = 0.4
-    ssl_projection_dim = 128 # Example, hiddenSize // 2
+    ssl_projection_dim = 50 # Example, hiddenSize // 2
 
 
 def main(opt):
