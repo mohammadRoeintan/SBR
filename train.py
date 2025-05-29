@@ -33,7 +33,7 @@ class Diginetica_arg():
 
 class Yoochoose_arg():
     dataset = 'yoochoose1_64'
-    batchSize = 75
+    batchSize = 384
     hiddenSize = 120
     epoch = 30
     lr = 0.001
