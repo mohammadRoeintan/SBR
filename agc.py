@@ -1,95 +1,288 @@
-#########################################################################
-# This code was modified from https://github.com/vballoli/nfnets-pytorch #
-#########################################################################
+#!/usr/bin/env python36
+# -*- coding: utf-8 -*-
+"""
+Created on July, 2018
+Modified in June, 2024 to include time differences
+"""
 
-import torch
-from collections import Iterable
-from torch import nn, optim
+import argparse
+import time
+import csv
+import pickle
+import operator
+import datetime
+import os
+import numpy as np
 
+parser = argparse.ArgumentParser()
+parser.add_argument('--dataset', default='sample', help='dataset name: diginetica/yoochoose/sample')
+opt = parser.parse_args()
+print(opt)
 
-def unitwise_norm(x: torch.Tensor):
-    if x.ndim <= 1:
-        dim = 0
-        keepdim = False
-    elif x.ndim in [2, 3]:
-        dim = 0
-        keepdim = True
-    elif x.ndim == 4:
-        dim = [1, 2, 3]
-        keepdim = True
+dataset = 'sample_train-item-views.csv'
+if opt.dataset == 'diginetica':
+    dataset = 'train-item-views.csv'
+elif opt.dataset =='yoochoose':
+    dataset = 'yoochoose-clicks.dat'
+
+print("-- Starting @ %ss" % datetime.datetime.now())
+
+# ساختارهای داده‌ای جدید برای ذخیره‌سازی تایم‌استمپ‌ها
+sess_timestamps = {}  # {session_id: [timestamp1, timestamp2, ...]}
+
+with open(dataset, "r") as f:
+    if opt.dataset == 'yoochoose':
+        reader = csv.DictReader(f, delimiter=',')
     else:
-        raise ValueError('Wrong dimensions of x')
-
-    return torch.sum(x**2, dim=dim, keepdim=keepdim) ** 0.5
-
-
-class AGC(optim.Optimizer):
+        reader = csv.DictReader(f, delimiter=';')
     
-    """Generic implementation of the Adaptive Gradient Clipping
-    Args:
-      params (iterable): iterable of parameters to optimize or dicts defining
-            parameter groups
-      optim (torch.optim.Optimizer): Optimizer with base class optim.Optimizer
-      clipping (float, optional): clipping value (default: 1e-3)
-      eps (float, optional): eps (default: 1e-3)
-      model (torch.nn.Module, optional): The original model
-      ignore_agc (str, Iterable, optional): Layers for AGC to ignore
-    """
+    sess_clicks = {}
+    sess_date = {}
+    ctr = 0
+    curid = -1
+    curdate = None
+    
+    for data in reader:
+        sessid = data['session_id']
+        if opt.dataset == 'yoochoose':
+            item = data['item_id']
+            timestamp = data['timestamp']
+        else:
+            item = data['item_id'], int(data['timeframe'])
+            timestamp = data['eventdate']
 
-    def __init__(self, params, optim: optim.Optimizer, clipping: float = 1e-2, eps: float = 1e-3, model=None, ignore_agc= ['']):
-        if clipping < 0.0:
-            raise ValueError("Invalid clipping value: {}".format(clipping))
-        if eps < 0.0:
-            raise ValueError("Invalid eps value: {}".format(eps))
+        # ذخیره تایم‌استمپ
+        if sessid in sess_timestamps:
+            sess_timestamps[sessid].append(timestamp)
+        else:
+            sess_timestamps[sessid] = [timestamp]
+        
+        # بقیه کد مثل قبل...
+        if curdate and not curid == sessid:
+            date = ''
+            if opt.dataset == 'yoochoose':
+                date = time.mktime(time.strptime(curdate[:19], '%Y-%m-%dT%H:%M:%S'))
+            else:
+                date = time.mktime(time.strptime(curdate, '%Y-%m-%d'))
+            sess_date[curid] = date
+        
+        curid = sessid
+        curdate = timestamp
 
-        self.optim = optim
+        if sessid in sess_clicks:
+            sess_clicks[sessid] += [item]
+        else:
+            sess_clicks[sessid] = [item]
+        
+        ctr += 1
+    
+    # پردازش نهایی
+    date = ''
+    if opt.dataset == 'yoochoose':
+        date = time.mktime(time.strptime(curdate[:19], '%Y-%m-%dT%H:%M:%S'))
+    else:
+        date = time.mktime(time.strptime(curdate, '%Y-%m-%d'))
+        for i in list(sess_clicks):
+            sorted_clicks = sorted(sess_clicks[i], key=operator.itemgetter(1))
+            sess_clicks[i] = [c[0] for c in sorted_clicks]
+    
+    sess_date[curid] = date
 
-        defaults = dict(clipping=clipping, eps=eps)
-        defaults = {**defaults, **optim.defaults}
+print("-- Reading data @ %ss" % datetime.datetime.now())
 
-        if not isinstance(ignore_agc, Iterable):
-            ignore_agc = [ignore_agc]
+# فیلتر سشن‌های طول 1
+for s in list(sess_clicks):
+    if len(sess_clicks[s]) == 1:
+        del sess_clicks[s]
+        del sess_date[s]
+        if s in sess_timestamps:
+            del sess_timestamps[s]
 
-        if model is not None:
-            assert ignore_agc not in [
-                None, []], "Specify args ignore_agc to ignore fc-like(or other) layers"
-            names = [name for name, module in model.named_modules()]
+# شمارش آیتم‌ها و فیلتر
+iid_counts = {}
+for s in sess_clicks:
+    seq = sess_clicks[s]
+    for iid in seq:
+        if iid in iid_counts:
+            iid_counts[iid] += 1
+        else:
+            iid_counts[iid] = 1
 
-            for module_name in ignore_agc:
-                if module_name not in names:
-                    raise ModuleNotFoundError(
-                        "Module name {} not found in the model".format(module_name))
-            parameters = [{"params": module.parameters()} for name,
-                          module in model.named_modules() if name not in ignore_agc]
+sorted_counts = sorted(iid_counts.items(), key=operator.itemgetter(1))
 
-        super(AGC, self).__init__(params, defaults)
+length = len(sess_clicks)
+for s in list(sess_clicks):
+    curseq = sess_clicks[s]
+    filseq = list(filter(lambda i: iid_counts[i] >= 5, curseq))
+    if len(filseq) < 2:
+        del sess_clicks[s]
+        del sess_date[s]
+        if s in sess_timestamps:
+            del sess_timestamps[s]
+    else:
+        sess_clicks[s] = filseq
 
-    @torch.no_grad()
-    def step(self, closure=None):
-        """Performs a single optimization step.
-        Arguments:
-            closure (callable, optional): A closure that reevaluates the model
-                and returns the loss.
-        """
-        loss = None
-        if closure is not None:
-            with torch.enable_grad():
-                loss = closure()
+# تقسیم داده‌ها
+dates = list(sess_date.items())
+maxdate = max(date for _, date in dates)
 
-        for group in self.param_groups:
-            for p in group['params']:
-                if p.grad is None:
-                    continue
-                param_norm = torch.max(unitwise_norm(
-                    p.detach()), torch.tensor(group['eps']).to(p.device))
-                grad_norm = unitwise_norm(p.grad.detach())
-                max_norm = param_norm * group['clipping']
+# 7 روز برای تست
+splitdate = maxdate - 86400 * 7
 
-                trigger = grad_norm < max_norm
+print('Splitting date', splitdate)
+tra_sess = [(s, date) for s, date in dates if date < splitdate]
+tes_sess = [(s, date) for s, date in dates if date > splitdate]
 
-                clipped_grad = p.grad * \
-                    (max_norm / torch.max(grad_norm,
-                                          torch.tensor(1e-6).to(grad_norm.device)))
-                p.grad.data.copy_(torch.where(trigger, clipped_grad, p.grad))
+# مرتب‌سازی سشن‌ها
+tra_sess = sorted(tra_sess, key=operator.itemgetter(1))
+tes_sess = sorted(tes_sess, key=operator.itemgetter(1))
+print(len(tra_sess))
+print(len(tes_sess))
+print(tra_sess[:3])
+print(tes_sess[:3])
+print("-- Splitting train set and test set @ %ss" % datetime.datetime.now())
 
-        return self.optim.step(closure)
+# تابع برای ایجاد داده‌های آموزشی
+def obtian_tra():
+    train_ids = []
+    train_seqs = []
+    train_dates = []
+    train_times = []  # لیست جدید برای اختلاف‌های زمانی
+    item_ctr = 1
+    item_dict = {}
+    
+    for s, date in tra_sess:
+        seq = sess_clicks[s]
+        timestamps = sess_timestamps.get(s, [])
+        outseq = []
+        time_diffs = [0]  # اولین رویداد اختلاف زمانی 0 دارد
+        
+        # محاسبه اختلاف زمانی بین رویدادها
+        if len(timestamps) > 1:
+            for i in range(1, len(timestamps)):
+                try:
+                    if opt.dataset == 'yoochoose':
+                        t1 = datetime.datetime.strptime(timestamps[i-1][:19], '%Y-%m-%dT%H:%M:%S')
+                        t2 = datetime.datetime.strptime(timestamps[i][:19], '%Y-%m-%dT%H:%M:%S')
+                    else:
+                        t1 = datetime.datetime.strptime(timestamps[i-1], '%Y-%m-%d')
+                        t2 = datetime.datetime.strptime(timestamps[i], '%Y-%m-%d')
+                    diff = (t2 - t1).total_seconds()
+                    time_diffs.append(diff)
+                except:
+                    time_diffs.append(0)
+        
+        for i in seq:
+            if i in item_dict:
+                outseq += [item_dict[i]]
+            else:
+                outseq += [item_ctr]
+                item_dict[i] = item_ctr
+                item_ctr += 1
+        
+        if len(outseq) < 2:
+            continue
+        
+        train_ids += [s]
+        train_dates += [date]
+        train_seqs += [outseq]
+        train_times += [time_diffs]  # ذخیره اختلاف‌های زمانی
+    
+    print(item_ctr)
+    return train_ids, train_dates, train_seqs, train_times, item_dict
+
+# تابع برای ایجاد داده‌های تست
+def obtian_tes(item_dict):
+    test_ids = []
+    test_seqs = []
+    test_dates = []
+    test_times = []  # لیست جدید برای اختلاف‌های زمانی
+    
+    for s, date in tes_sess:
+        seq = sess_clicks[s]
+        timestamps = sess_timestamps.get(s, [])
+        outseq = []
+        time_diffs = [0]  # اولین رویداد اختلاف زمانی 0 دارد
+        
+        # محاسبه اختلاف زمانی بین رویدادها
+        if len(timestamps) > 1:
+            for i in range(1, len(timestamps)):
+                try:
+                    if opt.dataset == 'yoochoose':
+                        t1 = datetime.datetime.strptime(timestamps[i-1][:19], '%Y-%m-%dT%H:%M:%S')
+                        t2 = datetime.datetime.strptime(timestamps[i][:19], '%Y-%m-%dT%H:%M:%S')
+                    else:
+                        t1 = datetime.datetime.strptime(timestamps[i-1], '%Y-%m-%d')
+                        t2 = datetime.datetime.strptime(timestamps[i], '%Y-%m-%d')
+                    diff = (t2 - t1).total_seconds()
+                    time_diffs.append(diff)
+                except:
+                    time_diffs.append(0)
+        
+        for i in seq:
+            if i in item_dict:
+                outseq += [item_dict[i]]
+        
+        if len(outseq) < 2:
+            continue
+        
+        test_ids += [s]
+        test_dates += [date]
+        test_seqs += [outseq]
+        test_times += [time_diffs]  # ذخیره اختلاف‌های زمانی
+    
+    return test_ids, test_dates, test_seqs, test_times
+
+# ایجاد داده‌های آموزشی و تست
+tra_ids, tra_dates, tra_seqs, tra_times, item_dict = obtian_tra()
+tes_ids, tes_dates, tes_seqs, tes_times = obtian_tes(item_dict)
+
+# پردازش سکانس‌ها
+def process_seqs(iseqs, idates, itimes):
+    out_seqs = []
+    out_dates = []
+    out_times = []  # لیست جدید برای زمان‌ها
+    labs = []
+    ids = []
+    
+    for id, (seq, date, times) in enumerate(zip(iseqs, idates, itimes)):
+        for i in range(1, len(seq)):
+            tar = seq[-i]
+            labs += [tar]
+            out_seqs += [seq[:-i]]
+            out_dates += [date]
+            out_times += [times[:len(seq)-i]]  # ذخیره زمان‌ها برای این سکانس
+            ids += [id]
+    
+    return out_seqs, out_dates, labs, ids, out_times
+
+# پردازش نهایی
+tr_seqs, tr_dates, tr_labs, tr_ids, tr_times = process_seqs(tra_seqs, tra_dates, tra_times)
+te_seqs, te_dates, te_labs, te_ids, te_times = process_seqs(tes_seqs, tes_dates, tes_times)
+
+tra = (tr_seqs, tr_labs)
+tes = (te_seqs, te_labs)
+
+# ذخیره داده‌های زمانی
+if opt.dataset == 'diginetica':
+    if not os.path.exists('diginetica'):
+        os.makedirs('diginetica')
+    
+    with open('diginetica/time_data.pkl', 'wb') as f:
+        pickle.dump(tr_times + te_times, f)
+    
+    # بقیه ذخیره‌سازی مانند قبل...
+
+elif opt.dataset == 'yoochoose':
+    if not os.path.exists('yoochoose1_4'):
+        os.makedirs('yoochoose1_4')
+    if not os.path.exists('yoochoose1_64'):
+        os.makedirs('yoochoose1_64')
+    
+    # ذخیره داده‌های زمانی برای yoochoose1_64
+    with open('yoochoose1_64/time_data.pkl', 'wb') as f:
+        pickle.dump(tr_times, f)
+    
+    # بقیه ذخیره‌سازی مانند قبل...
+
+print('Done. Time differences data saved to time_data.pkl')
