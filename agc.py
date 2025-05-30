@@ -21,7 +21,7 @@ print(opt)
 
 # تنظیمات خاص دیتاست Yoochoose
 if opt.dataset == 'yoochoose':
-    dataset = 'yoochoose-clicks.dat'
+    dataset = '/kaggle/input/yoochoose/yoochoose-clicks.dat'
     # تعریف نام ستون‌ها بر اساس مستندات
     COLUMNS = ['session_id', 'timestamp', 'item_id', 'category']
     
