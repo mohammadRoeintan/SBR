@@ -24,7 +24,7 @@ def data_masks(all_usr_pois, item_tail, max_len):
     len_max = max(us_lens)
     us_pois = [upois + item_tail * (len_max - le) for upois, le in zip(all_usr_pois, us_lens)]
     us_msks = [[1] * le + [0] * (len_max - le) for le in us_lens]
-    us_pos = [list(range(le)) + [0] * (len_max - le) for le in us_lens]
+    us_pos = [list(range(1, le+1)) + [0] * (len_max - le) for le in us_lens]
     return us_pois, us_msks, us_pos, len_max
 
 
@@ -63,32 +63,31 @@ class Dataset():
         if self.length % batch_size != 0:
             n_batch += 1
         slices = np.split(np.arange(n_batch * batch_size), n_batch)
-        if self.length == 0 : # Handle empty dataset
-             print("Warning: Dataset is empty, no batches to generate.")
+        if self.length == 0:
              return []
         slices[-1] = slices[-1][:(self.length - batch_size * (n_batch - 1))]
-        # Filter out empty slices that might result from the split if length < batch_size
         slices = [s for s in slices if len(s) > 0]
         return slices
 
     def _augment_sequence_item_dropout(self, seq, drop_prob, max_len):
         if drop_prob == 0:
-            return seq + [0] * (max_len - len(seq))
+            return seq[:max_len] + [0] * (max_len - len(seq))
         
         augmented_seq = []
         for item in seq:
             if random.random() > drop_prob:
                 augmented_seq.append(item)
-        
+            if len(augmented_seq) >= max_len:
+                break
+                
         if len(augmented_seq) == 0:
-            augmented_seq = [seq[0]]  # Keep at least one item
+            augmented_seq = [seq[0]]
             
+        augmented_seq = augmented_seq[:max_len]
         return augmented_seq + [0] * (max_len - len(augmented_seq))
 
 
     def _get_graph_data_for_view(self, current_inputs_batch_padded_items):
-        # current_inputs_batch_padded_items: list of sequences (already augmented and padded to batch_max_len)
-        
         items_list, A_list, alias_inputs_list = [], [], []
         mask_list_for_view = [] 
         positions_list_for_view = []
@@ -96,13 +95,14 @@ class Dataset():
         batch_max_n_node = 0
         temp_n_nodes_for_batch = []
         for u_input_single_items in current_inputs_batch_padded_items:
-            unique_nodes_in_seq = np.unique(np.array(u_input_single_items)[np.array(u_input_single_items) != 0])
+            unique_nodes_in_seq = np.unique(np.array(u_input_single_items))
+            unique_nodes_in_seq = unique_nodes_in_seq[unique_nodes_in_seq != 0]
             num_unique = len(unique_nodes_in_seq)
             temp_n_nodes_for_batch.append(num_unique if num_unique > 0 else 1)
         
         batch_max_n_node = np.max(temp_n_nodes_for_batch) if temp_n_nodes_for_batch else 1
 
-        for u_input_single_items in current_inputs_batch_padded_items: # u_input_single_items is a list of item IDs
+        for u_input_single_items in current_inputs_batch_padded_items:
             current_mask = [1 if item != 0 else 0 for item in u_input_single_items]
             mask_list_for_view.append(current_mask)
             
@@ -116,8 +116,10 @@ class Dataset():
                     current_pos_seq.append(0)
             positions_list_for_view.append(current_pos_seq)
 
-            node = np.unique(np.array(u_input_single_items)[np.array(u_input_single_items) != 0])
-            if len(node) == 0: node = np.array([0])
+            node = np.unique(np.array(u_input_single_items))
+            node = node[node != 0]
+            if len(node) == 0: 
+                node = np.array([0])
             
             items_list.append(node.tolist() + (batch_max_n_node - len(node)) * [0])
             
@@ -128,26 +130,31 @@ class Dataset():
                 item_curr = u_input_single_items[i_idx]
                 item_next = u_input_single_items[i_idx+1]
 
-                if item_next == 0: break 
-                if item_curr == 0: continue
+                if item_curr == 0 or item_next == 0: 
+                    continue
                 
                 if item_curr in item_to_idx_map and item_next in item_to_idx_map:
                     u = item_to_idx_map[item_curr]
                     v = item_to_idx_map[item_next]
-                    u_A[u][v] = 1
+                    u_A[u][v] += 1
             
-            u_sum_in = np.sum(u_A, 0); u_sum_in[np.where(u_sum_in == 0)] = 1
+            u_sum_in = np.sum(u_A, 0)
+            u_sum_in[u_sum_in == 0] = 1
             u_A_in = np.divide(u_A, u_sum_in)
-            u_sum_out = np.sum(u_A, 1); u_sum_out[np.where(u_sum_out == 0)] = 1
+            u_sum_out = np.sum(u_A, 1)
+            u_sum_out[u_sum_out == 0] = 1
             u_A_out = np.divide(u_A.transpose(), u_sum_out)
-            A_list.append(np.concatenate([u_A_in, u_A_out]).transpose())
+            u_A_out = u_A_out.transpose()
+            A_list.append(np.concatenate([u_A_in, u_A_out], axis=1))
 
             alias_for_current_seq = []
             for item_val_in_seq in u_input_single_items:
-                if item_val_in_seq == 0: alias_for_current_seq.append(0)
+                if item_val_in_seq == 0: 
+                    alias_for_current_seq.append(0)
                 elif item_val_in_seq in item_to_idx_map:
                     alias_for_current_seq.append(item_to_idx_map[item_val_in_seq])
-                else: alias_for_current_seq.append(0)
+                else: 
+                    alias_for_current_seq.append(0)
             alias_inputs_list.append(alias_for_current_seq)
             
         return np.array(alias_inputs_list), np.array(A_list), np.array(items_list), \
@@ -155,22 +162,27 @@ class Dataset():
 
 
     def get_slice(self, batch_indices, ssl_item_drop_prob=0.2):
-        # batch_indices is the output of np.split, which are indices into self.raw_inputs
-        if len(batch_indices) == 0: # Handle case where a slice might be empty
-            # This should ideally be prevented by generate_batch filtering
-            return (np.array([]), np.array([]), np.array([]), np.array([]), np.array([])), \
-                   (np.array([]), np.array([]), np.array([]), np.array([]), np.array([])), \
-                   np.array([]), np.array([])
+        if len(batch_indices) == 0:
+            return (np.array([], dtype=np.int64), 
+                    np.array([], dtype=np.float32), 
+                    np.array([], dtype=np.int64), 
+                    np.array([], dtype=np.int64), 
+                    np.array([], dtype=np.int64)), \
+                   (np.array([], dtype=np.int64), 
+                    np.array([], dtype=np.float32), 
+                    np.array([], dtype=np.int64), 
+                    np.array([], dtype=np.int64), 
+                    np.array([], dtype=np.int64)), \
+                   np.array([], dtype=np.int64), 
+                   np.array([], dtype=np.int64)
 
         batch_raw_inputs_unpadded = [self.raw_inputs[idx] for idx in batch_indices]
         batch_targets = self.targets[batch_indices]
         
         batch_us_lens = [len(s) for s in batch_raw_inputs_unpadded]
-        current_batch_max_len = max(batch_us_lens) if batch_us_lens else 0
-        current_batch_max_len = min(current_batch_max_len, self.len_max) # Ensure it doesn't exceed overall max_len
-
-        if current_batch_max_len == 0 and len(batch_raw_inputs_unpadded) > 0 : # if all sequences in batch are empty
-             current_batch_max_len = 1 # Avoid 0 length for padding, though this data is problematic
+        current_batch_max_len = min(max(batch_us_lens) if batch_us_lens else 0, self.len_max)
+        if current_batch_max_len == 0 and len(batch_raw_inputs_unpadded) > 0:
+             current_batch_max_len = 1
 
         inputs_v1_padded_items = [self._augment_sequence_item_dropout(seq, 0.0, current_batch_max_len) for seq in batch_raw_inputs_unpadded]
         inputs_v2_padded_items = [self._augment_sequence_item_dropout(seq, ssl_item_drop_prob, current_batch_max_len) for seq in batch_raw_inputs_unpadded]
@@ -178,7 +190,6 @@ class Dataset():
         alias_v1, A_v1, items_v1, mask_v1_ssl, positions_v1 = self._get_graph_data_for_view(inputs_v1_padded_items)
         alias_v2, A_v2, items_v2, mask_v2_ssl, positions_v2 = self._get_graph_data_for_view(inputs_v2_padded_items)
 
-        # Original mask for main task, padded to current_batch_max_len
         _, batch_mask_main_list, _, _ = data_masks(batch_raw_inputs_unpadded, [0], current_batch_max_len)
         
         return (alias_v1, A_v1, items_v1, mask_v1_ssl, positions_v1), \
