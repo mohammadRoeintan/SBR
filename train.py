@@ -13,50 +13,53 @@ from torch.utils.tensorboard import SummaryWriter
 def str2bool(v):
     return v.lower() in ('true', '1', 'yes')
 
-class Diginetica_arg():
-    dataset = 'diginetica'
-    batchSize = 256
-    hiddenSize = 512
-    epoch = 100
-    lr = 0.001
-    l2 = 1e-4
-    step = 3
-    patience = 20
-    nonhybrid = False
-    validation = True
-    valid_portion = 0.1
-    ssl_weight = 0.5
-    ssl_temperature = 0.1
-    ssl_item_drop_prob = 0.4
-    ssl_projection_dim = 256
-    n_gpu = 1
-    max_len = 50
-    position_emb_dim = 512
+class Diginetica_arg:
+    def __init__(self):
+        self.dataset = 'diginetica'
+        self.batchSize = 256
+        self.hiddenSize = 512
+        self.epoch = 100
+        self.lr = 0.001
+        self.l2 = 1e-4
+        self.step = 3
+        self.patience = 20
+        self.nonhybrid = False
+        self.validation = True
+        self.valid_portion = 0.1
+        self.ssl_weight = 0.5
+        self.ssl_temperature = 0.1
+        self.ssl_item_drop_prob = 0.4
+        self.ssl_projection_dim = 256
+        self.n_gpu = 1
+        self.max_len = 0
+        self.position_emb_dim = 0
 
-class Yoochoose_arg():
-    dataset = 'yoochoose1_64'
-    batchSize = 512
-    hiddenSize = 512
-    epoch = 100
-    lr = 0.001
-    l2 = 1e-4
-    step = 4
-    patience = 20
-    nonhybrid = False
-    validation = True
-    valid_portion = 0.1
-    ssl_weight = 0.5
-    ssl_temperature = 0.1
-    ssl_item_drop_prob = 0.4
-    ssl_projection_dim = 256
-    n_gpu = 1
-    max_len = 50
-    position_emb_dim = 512
+class Yoochoose_arg:
+    def __init__(self):
+        self.dataset = 'yoochoose1_64'
+        self.batchSize = 512
+        self.hiddenSize = 512
+        self.epoch = 100
+        self.lr = 0.001
+        self.l2 = 1e-4
+        self.step = 4
+        self.patience = 20
+        self.nonhybrid = False
+        self.validation = True
+        self.valid_portion = 0.1
+        self.ssl_weight = 0.5
+        self.ssl_temperature = 0.1
+        self.ssl_item_drop_prob = 0.4
+        self.ssl_projection_dim = 256
+        self.n_gpu = 1
+        self.max_len = 0
+        self.position_emb_dim = 0
 
 def main(opt):
+    # تعیین مسیر دیتاست بر اساس نام دیتاست
+    data_dir = f'datasets/{opt.dataset}/'
     model_save_dir = 'saved_star_models/'
     log_dir = 'logs_star/'
-    data_dir = f'datasets/"yoochoose1_64"/'
 
     for directory in [model_save_dir, log_dir]:
         if not os.path.exists(directory):
@@ -65,15 +68,15 @@ def main(opt):
 
     writer = SummaryWriter(log_dir=log_dir)
 
-    # Automatic device selection
+    # انتخاب خودکار دستگاه
     device = torch.device("cuda" if torch.cuda.is_available() and opt.n_gpu > 0 else "cpu")
     if torch.cuda.is_available() and opt.n_gpu > 0:
         print(f"Using {torch.cuda.device_count()} GPU(s)")
     else:
         print("Using CPU")
 
-    # Load dataset
     try:
+        # بارگیری داده‌ها
         with open(os.path.join(data_dir, 'train.txt'), 'rb') as f:
             train_data_raw = pickle.load(f)
         with open(os.path.join(data_dir, 'test.txt'), 'rb') as f:
@@ -84,7 +87,7 @@ def main(opt):
         print(f"Error loading data: {e}")
         sys.exit(1)
 
-    # Validation split
+    # تقسیم داده‌های اعتبارسنجی
     if opt.validation:
         train_data_raw, valid_data_raw = split_validation(train_data_raw, opt.valid_portion)
         test_data_raw = valid_data_raw
@@ -96,40 +99,40 @@ def main(opt):
         
     print(f'Training set size: {len(train_data_raw[0])} sessions.')
 
-    # Create data loaders
+    # ایجاد لودرهای داده
     train_data_loader = Dataset(train_data_raw, time_data, shuffle=True, opt=opt)
     test_data_loader = Dataset(test_data_raw, time_data, shuffle=False, opt=opt)
     
-    # Adjust max length
+    # تنظیم حداکثر طول
     actual_dataset_max_len = train_data_loader.len_max
     if opt.max_len == 0 or opt.max_len < actual_dataset_max_len:
         print(f"Updating opt.max_len from {opt.max_len} to {actual_dataset_max_len}")
         opt.max_len = actual_dataset_max_len
     
-    # Set embedding dimensions
+    # تنظیم ابعاد تعبیه
     if opt.position_emb_dim == 0: 
         opt.position_emb_dim = opt.hiddenSize
         
     if opt.ssl_projection_dim == 0:
         opt.ssl_projection_dim = opt.hiddenSize // 2
 
-    # Determine number of items
+    # تعیین تعداد آیتم‌ها
     if opt.dataset == 'diginetica': 
         n_node = 43098
     elif opt.dataset == 'yoochoose1_64': 
         n_node = 37484
     else: 
-        # Calculate from data
+        # محاسبه از روی داده‌ها
         all_items = set()
         for session in train_data_raw[0] + test_data_raw[0]:
             all_items.update(session)
-        n_node = len(all_items) + 1  # +1 for padding
+        n_node = len(all_items) + 1  # +1 برای padding
         print(f"Calculated n_node: {n_node}")
 
-    # Create model
+    # ایجاد مدل
     model_instance = Attention_SessionGraph(opt, n_node)
 
-    # Multi-GPU support
+    # پشتیبانی چند GPU
     if opt.n_gpu > 1 and torch.cuda.is_available():
         print(f"Using {opt.n_gpu} GPUs with DataParallel")
         model = torch.nn.DataParallel(model_instance)
@@ -157,7 +160,7 @@ def main(opt):
         flag = 0
         saved_this_epoch_path = ""
 
-        # Save best by recall
+        # ذخیره بهترین مدل بر اساس Recall
         if current_hit >= best_result[0]:
             best_result[0] = current_hit
             best_epoch[0] = epoch_num
@@ -173,7 +176,7 @@ def main(opt):
             torch.save(state_to_save, saved_this_epoch_path)
             print(f"Saved best model (by Recall) to {saved_this_epoch_path}")
 
-        # Save best by MRR
+        # ذخیره بهترین مدل بر اساس MRR
         if current_mrr >= best_result[1]:
             best_result[1] = current_mrr
             best_epoch[1] = epoch_num
@@ -192,7 +195,7 @@ def main(opt):
 
         print(f'Current Best: Recall@20: {best_result[0]:.4f} (Epoch {best_epoch[0]}), MRR@20: {best_result[1]:.4f} (Epoch {best_epoch[1]})')
         
-        # Early stopping
+        # توقف زودهنگام
         bad_counter = 0 if flag else bad_counter + 1
         if bad_counter >= opt.patience:
             print(f"Early stopping after {opt.patience} epochs without improvement.")
@@ -204,69 +207,60 @@ def main(opt):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    # Dataset Configuration
-    dataset_group = parser.add_argument_group('Dataset Configuration')
-    dataset_group.add_argument('--dataset', default='yoochoose1_64', choices=['diginetica', 'yoochoose1_64'], help='Dataset name')
-    dataset_group.add_argument('--validation', type=str2bool, default=True, help='Use validation split')
-    dataset_group.add_argument('--valid_portion', type=float, default=0.1, help='Validation split portion')
+    # پیکربندی دیتاست
+    parser.add_argument('--dataset', default='yoochoose1_64', choices=['diginetica', 'yoochoose1_64'], help='Dataset name')
+    parser.add_argument('--validation', type=str2bool, default=True, help='Use validation split')
+    parser.add_argument('--valid_portion', type=float, default=0.1, help='Validation split portion')
 
-    # Model Hyperparameters
-    model_group = parser.add_argument_group('Model Hyperparameters')
-    model_group.add_argument('--hiddenSize', type=int, default=512, help='Hidden state dimension')
-    model_group.add_argument('--step', type=int, default=4, help='GNN propagation steps')
-    model_group.add_argument('--nonhybrid', type=str2bool, default=False, help='Use non-hybrid scoring')
-    model_group.add_argument('--max_len', type=int, default=0, help='Max session length (0=auto)')
-    model_group.add_argument('--position_emb_dim', type=int, default=0, help='Position embedding dim (0=hiddenSize)')
+    # هایپرپارامترهای مدل
+    parser.add_argument('--hiddenSize', type=int, default=512, help='Hidden state dimension')
+    parser.add_argument('--step', type=int, default=4, help='GNN propagation steps')
+    parser.add_argument('--nonhybrid', type=str2bool, default=False, help='Use non-hybrid scoring')
+    parser.add_argument('--max_len', type=int, default=0, help='Max session length (0=auto)')
+    parser.add_argument('--position_emb_dim', type=int, default=0, help='Position embedding dim (0=hiddenSize)')
 
-    # Training Hyperparameters
-    train_group = parser.add_argument_group('Training Hyperparameters')
-    train_group.add_argument('--defaults', type=str2bool, default=True, help='Use dataset defaults')
-    train_group.add_argument('--n_gpu', type=int, default=1, help='Num GPUs (0=CPU)')
-    train_group.add_argument('--batchSize', type=int, default=512, help='Batch size')
-    train_group.add_argument('--epoch', type=int, default=100, help='Number of epochs')
-    train_group.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-    train_group.add_argument('--l2', type=float, default=1e-4, help='L2 penalty')
-    train_group.add_argument('--patience', type=int, default=20, help='Early stopping patience')
+    # هایپرپارامترهای آموزش
+    parser.add_argument('--n_gpu', type=int, default=1, help='Num GPUs (0=CPU)')
+    parser.add_argument('--batchSize', type=int, default=512, help='Batch size')
+    parser.add_argument('--epoch', type=int, default=100, help='Number of epochs')
+    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
+    parser.add_argument('--l2', type=float, default=1e-4, help='L2 penalty')
+    parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
 
-    # SSL Hyperparameters
-    ssl_group = parser.add_argument_group('Self-Supervised Learning')
-    ssl_group.add_argument('--ssl_weight', type=float, default=0.5, help='SSL loss weight')
-    ssl_group.add_argument('--ssl_temperature', type=float, default=0.1, help='SSL temperature')
-    ssl_group.add_argument('--ssl_item_drop_prob', type=float, default=0.4, help='Item dropout prob')
-    ssl_group.add_argument('--ssl_projection_dim', type=int, default=0, help='Projection dim (0=hiddenSize/2)')
+    # یادگیری خودنظارتی
+    parser.add_argument('--ssl_weight', type=float, default=0.5, help='SSL loss weight')
+    parser.add_argument('--ssl_temperature', type=float, default=0.1, help='SSL temperature')
+    parser.add_argument('--ssl_item_drop_prob', type=float, default=0.4, help='Item dropout prob')
+    parser.add_argument('--ssl_projection_dim', type=int, default=0, help='Projection dim (0=hiddenSize/2)')
 
     cmd_args = parser.parse_args()
     
+    # ایجاد شیء تنظیمات
     opt = argparse.Namespace()
-
-    # Apply dataset-specific defaults
-    if cmd_args.defaults:
-        if cmd_args.dataset == 'diginetica':
-            base_config = Diginetica_arg()
-        elif cmd_args.dataset == 'yoochoose1_64':
-            base_config = Yoochoose_arg()
-        else:
-            print(f"Error: Unknown dataset '{cmd_args.dataset}'")
-            sys.exit(1)
-        
-        # Apply base config
-        for key, value in vars(base_config).items():
-            setattr(opt, key, value)
-        
-        # Override with command-line args
-        for key, value in vars(cmd_args).items():
-            if value != parser.get_default(key):
-                setattr(opt, key, value)
+    
+    # اعمال تنظیمات پیش‌فرض بر اساس دیتاست
+    if cmd_args.dataset == 'diginetica':
+        base_config = Diginetica_arg()
+    elif cmd_args.dataset == 'yoochoose1_64':
+        base_config = Yoochoose_arg()
     else:
-        # Use command-line args directly
-        for key, value in vars(cmd_args).items():
+        print(f"Error: Unknown dataset '{cmd_args.dataset}'")
+        sys.exit(1)
+    
+    # کپی تنظیمات پایه
+    for key, value in vars(base_config).items():
+        setattr(opt, key, value)
+    
+    # بازنویسی با مقادیر خط فرمان
+    for key, value in vars(cmd_args).items():
+        if hasattr(opt, key):
             setattr(opt, key, value)
     
-    # Set derived parameters
-    if not hasattr(opt, 'ssl_projection_dim') or opt.ssl_projection_dim == 0:
+    # تنظیم پارامترهای مشتق شده
+    if opt.ssl_projection_dim == 0:
         opt.ssl_projection_dim = opt.hiddenSize // 2
 
-    if not hasattr(opt, 'position_emb_dim') or opt.position_emb_dim == 0:
+    if opt.position_emb_dim == 0:
         opt.position_emb_dim = opt.hiddenSize
         
     print("Final configuration:")
