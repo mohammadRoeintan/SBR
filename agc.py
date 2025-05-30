@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Created on July, 2018
-Modified in June, 2024 to include time differences
+Modified in June, 2024 for Yoochoose dataset
 """
 
 import argparse
@@ -12,277 +12,196 @@ import pickle
 import operator
 import datetime
 import os
-import numpy as np
+from collections import defaultdict
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', default='sample', help='dataset name: diginetica/yoochoose/sample')
+parser.add_argument('--dataset', default='yoochoose', help='dataset name: yoochoose')
 opt = parser.parse_args()
 print(opt)
 
-dataset = '/kaggle/input/yoochoose/yoochoose-clicks.dat'
-if opt.dataset == 'diginetica':
-    dataset = 'train-item-views.csv'
-elif opt.dataset =='yoochoose':
+# تنظیمات خاص دیتاست Yoochoose
+if opt.dataset == 'yoochoose':
     dataset = 'yoochoose-clicks.dat'
-
+    # تعریف نام ستون‌ها بر اساس مستندات
+    COLUMNS = ['session_id', 'timestamp', 'item_id', 'category']
+    
 print("-- Starting @ %ss" % datetime.datetime.now())
 
-# ساختارهای داده‌ای جدید برای ذخیره‌سازی تایم‌استمپ‌ها
-sess_timestamps = {}  # {session_id: [timestamp1, timestamp2, ...]}
+# ساختارهای داده‌ای
+sess_clicks = defaultdict(list)      # {session_id: [item1, item2, ...]}
+sess_timestamps = defaultdict(list)  # {session_id: [timestamp1, timestamp2, ...]}
+sess_last_date = {}                  # {session_id: last_timestamp}
+item_counts = defaultdict(int)       # {item_id: count}
 
+# خواندن فایل دیتاست
 with open(dataset, "r") as f:
-    if opt.dataset == 'yoochoose':
-        reader = csv.DictReader(f, delimiter=',')
-    else:
-        reader = csv.DictReader(f, delimiter=';')
-    
-    sess_clicks = {}
-    sess_date = {}
-    ctr = 0
-    curid = -1
-    curdate = None
-    
-    for data in reader:
-        sessid = data['session_id']
-        if opt.dataset == 'yoochoose':
-            item = data['item_id']
-            timestamp = data['timestamp']
-        else:
-            item = data['item_id'], int(data['timeframe'])
-            timestamp = data['eventdate']
-
-        # ذخیره تایم‌استمپ
-        if sessid in sess_timestamps:
-            sess_timestamps[sessid].append(timestamp)
-        else:
-            sess_timestamps[sessid] = [timestamp]
+    reader = csv.reader(f, delimiter=',')
+    for row in reader:
+        # بررسی تعداد ستون‌ها
+        if len(row) != 4:
+            continue
+            
+        # استخراج داده‌ها بر اساس موقعیت ستون
+        session_id = row[0].strip()
+        timestamp = row[1].strip()
+        item_id = row[2].strip()
+        category = row[3].strip()  # استفاده نشده اما برای کامل بودن استخراج می‌شود
         
-        # بقیه کد مثل قبل...
-        if curdate and not curid == sessid:
-            date = ''
-            if opt.dataset == 'yoochoose':
-                date = time.mktime(time.strptime(curdate[:19], '%Y-%m-%dT%H:%M:%S'))
-            else:
-                date = time.mktime(time.strptime(curdate, '%Y-%m-%d'))
-            sess_date[curid] = date
-        
-        curid = sessid
-        curdate = timestamp
+        # ذخیره داده‌ها
+        sess_clicks[session_id].append(item_id)
+        sess_timestamps[session_id].append(timestamp)
+        sess_last_date[session_id] = timestamp
+        item_counts[item_id] += 1
 
-        if sessid in sess_clicks:
-            sess_clicks[sessid] += [item]
-        else:
-            sess_clicks[sessid] = [item]
-        
-        ctr += 1
-    
-    # پردازش نهایی
-    date = ''
-    if opt.dataset == 'yoochoose':
-        date = time.mktime(time.strptime(curdate[:19], '%Y-%m-%dT%H:%M:%S'))
-    else:
-        date = time.mktime(time.strptime(curdate, '%Y-%m-%d'))
-        for i in list(sess_clicks):
-            sorted_clicks = sorted(sess_clicks[i], key=operator.itemgetter(1))
-            sess_clicks[i] = [c[0] for c in sorted_clicks]
-    
-    sess_date[curid] = date
-
+print(f"Total sessions: {len(sess_clicks)}")
+print(f"Total items: {len(item_counts)}")
 print("-- Reading data @ %ss" % datetime.datetime.now())
 
-# فیلتر سشن‌های طول 1
-for s in list(sess_clicks):
-    if len(sess_clicks[s]) == 1:
-        del sess_clicks[s]
-        del sess_date[s]
-        if s in sess_timestamps:
-            del sess_timestamps[s]
+# فیلتر سشن‌های طول 1 و آیتم‌های نادر
+MIN_SESSION_LENGTH = 2
+MIN_ITEM_COUNT = 5
 
-# شمارش آیتم‌ها و فیلتر
-iid_counts = {}
-for s in sess_clicks:
-    seq = sess_clicks[s]
-    for iid in seq:
-        if iid in iid_counts:
-            iid_counts[iid] += 1
-        else:
-            iid_counts[iid] = 1
+# حذف سشن‌های کوتاه
+for session_id in list(sess_clicks.keys()):
+    if len(sess_clicks[session_id]) < MIN_SESSION_LENGTH:
+        del sess_clicks[session_id]
+        del sess_timestamps[session_id]
+        if session_id in sess_last_date:
+            del sess_last_date[session_id]
 
-sorted_counts = sorted(iid_counts.items(), key=operator.itemgetter(1))
-
-length = len(sess_clicks)
-for s in list(sess_clicks):
-    curseq = sess_clicks[s]
-    filseq = list(filter(lambda i: iid_counts[i] >= 5, curseq))
-    if len(filseq) < 2:
-        del sess_clicks[s]
-        del sess_date[s]
-        if s in sess_timestamps:
-            del sess_timestamps[s]
+# فیلتر آیتم‌های نادر
+for session_id in list(sess_clicks.keys()):
+    filtered_items = []
+    filtered_timestamps = []
+    for item, timestamp in zip(sess_clicks[session_id], sess_timestamps[session_id]):
+        if item_counts[item] >= MIN_ITEM_COUNT:
+            filtered_items.append(item)
+            filtered_timestamps.append(timestamp)
+    
+    if len(filtered_items) >= MIN_SESSION_LENGTH:
+        sess_clicks[session_id] = filtered_items
+        sess_timestamps[session_id] = filtered_timestamps
     else:
-        sess_clicks[s] = filseq
+        del sess_clicks[session_id]
+        del sess_timestamps[session_id]
+        if session_id in sess_last_date:
+            del sess_last_date[session_id]
 
-# تقسیم داده‌ها
-dates = list(sess_date.items())
-maxdate = max(date for _, date in dates)
+print(f"Sessions after filtering: {len(sess_clicks)}")
 
-# 7 روز برای تست
-splitdate = maxdate - 86400 * 7
+# تبدیل تایم‌استمپ‌ها به ثانیه از epoch
+def convert_yoochoose_timestamp(timestamp_str):
+    try:
+        # فرمت: YYYY-MM-DDThh:mm:ss.SSSZ
+        dt = datetime.datetime.strptime(timestamp_str[:19], '%Y-%m-%dT%H:%M:%S')
+        return time.mktime(dt.timetuple())
+    except:
+        return 0
 
-print('Splitting date', splitdate)
-tra_sess = [(s, date) for s, date in dates if date < splitdate]
-tes_sess = [(s, date) for s, date in dates if date > splitdate]
+# محاسبه زمان هر سشن (آخرین تایم‌استمپ)
+sess_times = {}
+for session_id, timestamps in sess_timestamps.items():
+    if timestamps:
+        last_timestamp = timestamps[-1]
+        sess_times[session_id] = convert_yoochoose_timestamp(last_timestamp)
 
-# مرتب‌سازی سشن‌ها
-tra_sess = sorted(tra_sess, key=operator.itemgetter(1))
-tes_sess = sorted(tes_sess, key=operator.itemgetter(1))
-print(len(tra_sess))
-print(len(tes_sess))
-print(tra_sess[:3])
-print(tes_sess[:3])
-print("-- Splitting train set and test set @ %ss" % datetime.datetime.now())
+# تقسیم داده به train/test بر اساس زمان
+all_sessions = list(sess_times.items())
+all_sessions.sort(key=lambda x: x[1])  # مرتب‌سازی بر اساس زمان
 
-# تابع برای ایجاد داده‌های آموزشی
-def obtian_tra():
-    train_ids = []
-    train_seqs = []
-    train_dates = []
-    train_times = []  # لیست جدید برای اختلاف‌های زمانی
-    item_ctr = 1
-    item_dict = {}
+# پیدا کردن زمان تقسیم (7 روز قبل از آخرین رویداد)
+if all_sessions:
+    max_time = all_sessions[-1][1]
+    split_time = max_time - (7 * 24 * 3600)  # 7 روز قبل
+else:
+    split_time = 0
+
+train_sessions = [s for s in all_sessions if s[1] < split_time]
+test_sessions = [s for s in all_sessions if s[1] >= split_time]
+
+print(f"Train sessions: {len(train_sessions)}")
+print(f"Test sessions: {len(test_sessions)}")
+
+# ایجاد دیکشنری برای نگاشت آیتم‌ها به ID
+item_to_id = {}
+current_id = 1
+
+def map_items(session_items):
+    global current_id
+    mapped = []
+    for item in session_items:
+        if item not in item_to_id:
+            item_to_id[item] = current_id
+            current_id += 1
+        mapped.append(item_to_id[item])
+    return mapped
+
+# پردازش سشن‌های آموزشی
+train_sequences = []
+train_time_diffs = []
+
+for session_id, _ in train_sessions:
+    items = sess_clicks[session_id]
+    timestamps = sess_timestamps[session_id]
     
-    for s, date in tra_sess:
-        seq = sess_clicks[s]
-        timestamps = sess_timestamps.get(s, [])
-        outseq = []
-        time_diffs = [0]  # اولین رویداد اختلاف زمانی 0 دارد
-        
-        # محاسبه اختلاف زمانی بین رویدادها
-        if len(timestamps) > 1:
-            for i in range(1, len(timestamps)):
-                try:
-                    if opt.dataset == 'yoochoose':
-                        t1 = datetime.datetime.strptime(timestamps[i-1][:19], '%Y-%m-%dT%H:%M:%S')
-                        t2 = datetime.datetime.strptime(timestamps[i][:19], '%Y-%m-%dT%H:%M:%S')
-                    else:
-                        t1 = datetime.datetime.strptime(timestamps[i-1], '%Y-%m-%d')
-                        t2 = datetime.datetime.strptime(timestamps[i], '%Y-%m-%d')
-                    diff = (t2 - t1).total_seconds()
-                    time_diffs.append(diff)
-                except:
-                    time_diffs.append(0)
-        
-        for i in seq:
-            if i in item_dict:
-                outseq += [item_dict[i]]
-            else:
-                outseq += [item_ctr]
-                item_dict[i] = item_ctr
-                item_ctr += 1
-        
-        if len(outseq) < 2:
-            continue
-        
-        train_ids += [s]
-        train_dates += [date]
-        train_seqs += [outseq]
-        train_times += [time_diffs]  # ذخیره اختلاف‌های زمانی
+    # محاسبه اختلاف زمانی
+    time_diffs = [0]  # اولین آیتم اختلاف زمانی 0 دارد
+    if len(timestamps) > 1:
+        prev_time = convert_yoochoose_timestamp(timestamps[0])
+        for ts in timestamps[1:]:
+            current_time = convert_yoochoose_timestamp(ts)
+            time_diffs.append(current_time - prev_time)
+            prev_time = current_time
     
-    print(item_ctr)
-    return train_ids, train_dates, train_seqs, train_times, item_dict
+    # نگاشت آیتم‌ها به ID
+    mapped_items = map_items(items)
+    train_sequences.append(mapped_items)
+    train_time_diffs.append(time_diffs)
 
-# تابع برای ایجاد داده‌های تست
-def obtian_tes(item_dict):
-    test_ids = []
-    test_seqs = []
-    test_dates = []
-    test_times = []  # لیست جدید برای اختلاف‌های زمانی
+# پردازش سشن‌های تست
+test_sequences = []
+test_time_diffs = []
+
+for session_id, _ in test_sessions:
+    items = sess_clicks[session_id]
+    timestamps = sess_timestamps[session_id]
     
-    for s, date in tes_sess:
-        seq = sess_clicks[s]
-        timestamps = sess_timestamps.get(s, [])
-        outseq = []
-        time_diffs = [0]  # اولین رویداد اختلاف زمانی 0 دارد
-        
-        # محاسبه اختلاف زمانی بین رویدادها
-        if len(timestamps) > 1:
-            for i in range(1, len(timestamps)):
-                try:
-                    if opt.dataset == 'yoochoose':
-                        t1 = datetime.datetime.strptime(timestamps[i-1][:19], '%Y-%m-%dT%H:%M:%S')
-                        t2 = datetime.datetime.strptime(timestamps[i][:19], '%Y-%m-%dT%H:%M:%S')
-                    else:
-                        t1 = datetime.datetime.strptime(timestamps[i-1], '%Y-%m-%d')
-                        t2 = datetime.datetime.strptime(timestamps[i], '%Y-%m-%d')
-                    diff = (t2 - t1).total_seconds()
-                    time_diffs.append(diff)
-                except:
-                    time_diffs.append(0)
-        
-        for i in seq:
-            if i in item_dict:
-                outseq += [item_dict[i]]
-        
-        if len(outseq) < 2:
-            continue
-        
-        test_ids += [s]
-        test_dates += [date]
-        test_seqs += [outseq]
-        test_times += [time_diffs]  # ذخیره اختلاف‌های زمانی
+    # محاسبه اختلاف زمانی
+    time_diffs = [0]
+    if len(timestamps) > 1:
+        prev_time = convert_yoochoose_timestamp(timestamps[0])
+        for ts in timestamps[1:]:
+            current_time = convert_yoochoose_timestamp(ts)
+            time_diffs.append(current_time - prev_time)
+            prev_time = current_time
     
-    return test_ids, test_dates, test_seqs, test_times
+    # نگاشت فقط آیتم‌هایی که در train دیده شده‌اند
+    mapped_items = [item_to_id[item] for item in items if item in item_to_id]
+    if len(mapped_items) >= MIN_SESSION_LENGTH:
+        test_sequences.append(mapped_items)
+        test_time_diffs.append(time_diffs)
 
-# ایجاد داده‌های آموزشی و تست
-tra_ids, tra_dates, tra_seqs, tra_times, item_dict = obtian_tra()
-tes_ids, tes_dates, tes_seqs, tes_times = obtian_tes(item_dict)
+print(f"Final item count: {len(item_to_id)}")
+print(f"Train sequences: {len(train_sequences)}")
+print(f"Test sequences: {len(test_sequences)}")
 
-# پردازش سکانس‌ها
-def process_seqs(iseqs, idates, itimes):
-    out_seqs = []
-    out_dates = []
-    out_times = []  # لیست جدید برای زمان‌ها
-    labs = []
-    ids = []
-    
-    for id, (seq, date, times) in enumerate(zip(iseqs, idates, itimes)):
-        for i in range(1, len(seq)):
-            tar = seq[-i]
-            labs += [tar]
-            out_seqs += [seq[:-i]]
-            out_dates += [date]
-            out_times += [times[:len(seq)-i]]  # ذخیره زمان‌ها برای این سکانس
-            ids += [id]
-    
-    return out_seqs, out_dates, labs, ids, out_times
+# ذخیره داده‌ها
+if not os.path.exists('yoochoose1_64'):
+    os.makedirs('yoochoose1_64')
 
-# پردازش نهایی
-tr_seqs, tr_dates, tr_labs, tr_ids, tr_times = process_seqs(tra_seqs, tra_dates, tra_times)
-te_seqs, te_dates, te_labs, te_ids, te_times = process_seqs(tes_seqs, tes_dates, tes_times)
+# ذخیره train/test
+with open('yoochoose1_64/train.txt', 'wb') as f:
+    pickle.dump((train_sequences, [seq[-1] for seq in train_sequences]), f)
 
-tra = (tr_seqs, tr_labs)
-tes = (te_seqs, te_labs)
+with open('yoochoose1_64/test.txt', 'wb') as f:
+    pickle.dump((test_sequences, [seq[-1] for seq in test_sequences]), f)
 
 # ذخیره داده‌های زمانی
-if opt.dataset == 'diginetica':
-    if not os.path.exists('diginetica'):
-        os.makedirs('diginetica')
-    
-    with open('diginetica/time_data.pkl', 'wb') as f:
-        pickle.dump(tr_times + te_times, f)
-    
-    # بقیه ذخیره‌سازی مانند قبل...
+with open('yoochoose1_64/time_data.pkl', 'wb') as f:
+    pickle.dump({
+        'train_time_diffs': train_time_diffs,
+        'test_time_diffs': test_time_diffs
+    }, f)
 
-elif opt.dataset == 'yoochoose':
-    if not os.path.exists('yoochoose1_4'):
-        os.makedirs('yoochoose1_4')
-    if not os.path.exists('yoochoose1_64'):
-        os.makedirs('yoochoose1_64')
-    
-    # ذخیره داده‌های زمانی برای yoochoose1_64
-    with open('yoochoose1_64/time_data.pkl', 'wb') as f:
-        pickle.dump(tr_times, f)
-    
-    # بقیه ذخیره‌سازی مانند قبل...
-
-print('Done. Time differences data saved to time_data.pkl')
+print("-- Data saved @ %ss" % datetime.datetime.now())
+print("Done.")
