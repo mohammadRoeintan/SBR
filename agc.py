@@ -19,7 +19,7 @@ parser.add_argument('--dataset', default='sample', help='dataset name: diginetic
 opt = parser.parse_args()
 print(opt)
 
-dataset = 'yoochoose-clicks.dat'
+dataset = ''
 if opt.dataset == 'diginetica':
     dataset = 'train-item-views.csv'
 elif opt.dataset =='yoochoose':
