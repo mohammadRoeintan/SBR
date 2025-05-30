@@ -57,7 +57,7 @@ class Yoochoose_arg:
 
 def main(opt):
     # تعیین مسیر دیتاست بر اساس نام دیتاست
-    data_dir = f'datasets/{opt.dataset}/'
+    data_dir = f'datasets/{opt.dataset}/raw'
     model_save_dir = 'saved_star_models/'
     log_dir = 'logs_star/'
 
