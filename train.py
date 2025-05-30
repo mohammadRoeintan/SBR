@@ -56,7 +56,7 @@ class Yoochoose_arg():
 def main(opt):
     model_save_dir = 'saved_star_models/'
     log_dir = 'logs_star/'
-    data_dir = f'datasets/{opt.dataset}/'
+    data_dir = f'datasets/"yoochoose1_64"/'
 
     for directory in [model_save_dir, log_dir]:
         if not os.path.exists(directory):
