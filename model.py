@@ -228,8 +228,11 @@ class Attention_SessionGraph(Module):
         z2 = F.normalize(z2, dim=-1)
         
         # Cosine similarity matrix
-        sim_matrix = torch.matmul(z1, z2.T) / self.ssl_temperature # [batch_size, batch_size]
-        
+        #sim_matrix = torch.matmul(z1, z2.T) / self.ssl_temperature # [batch_size, batch_size]
+        # یک طرف را detach می‌کنیم تا از collapse projection جلوگیری کنیم
+        sim_matrix = torch.matmul(z1, z2.detach().T) / self.ssl_temperature
+
+
         # Positive pairs are on the diagonal (i-th session in view1 corresponds to i-th session in view2)
         labels = torch.arange(z1.size(0)).long().to(z1.device)
         
@@ -352,8 +355,11 @@ def train_test(model, train_data, test_data, opt): # Added opt
         loss_ssl = model.calculate_infonce_loss(projected_emb_v1, projected_emb_v2)
            
         # Total loss
-        combined_loss = loss_main + model.ssl_weight * loss_ssl
-           
+        #combined_loss = loss_main + model.ssl_weight * loss_ssl
+        # warm-up: در ۲ epoch اول ssl_weight = 0.0
+        current_ssl_weight = 0.0 if opt.epoch <= 2 else model.ssl_weight
+        combined_loss = loss_main + current_ssl_weight * loss_ssl  
+
         combined_loss.backward()
         model.optimizer.step()
            
