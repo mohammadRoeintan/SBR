@@ -163,18 +163,7 @@ class Dataset():
 
     def get_slice(self, batch_indices, ssl_item_drop_prob=0.2):
         if len(batch_indices) == 0:
-            return (np.array([], dtype=np.int64), 
-                    np.array([], dtype=np.float32), 
-                    np.array([], dtype=np.int64), 
-                    np.array([], dtype=np.int64), 
-                    np.array([], dtype=np.int64)), \
-                   (np.array([], dtype=np.int64), 
-                    np.array([], dtype=np.float32), 
-                    np.array([], dtype=np.int64), 
-                    np.array([], dtype=np.int64), 
-                    np.array([], dtype=np.int64)), \
-                   np.array([], dtype=np.int64), 
-                   np.array([], dtype=np.int64)
+            return (np.array([], dtype=np.int64), np.array([], dtype=np.float32),   np.array([], dtype=np.int64),    np.array([], dtype=np.int64),   np.array([], dtype=np.int64)),  (np.array([], dtype=np.int64),    np.array([], dtype=np.float32),      np.array([], dtype=np.int64),     np.array([], dtype=np.int64), np.array([], dtype=np.int64)),        np.array([], dtype=np.int64),    np.array([], dtype=np.int64)
 
         batch_raw_inputs_unpadded = [self.raw_inputs[idx] for idx in batch_indices]
         batch_targets = self.targets[batch_indices]
