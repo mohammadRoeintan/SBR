@@ -15,47 +15,47 @@ def str2bool(v):
 
 class Diginetica_arg():
     dataset = 'diginetica'
-    batchSize = 50
-    hiddenSize = 100
-    epoch = 30
-    lr = 0.001
-    lr_dc = 0.1
-    lr_dc_step = 3
-    l2 = 1e-5
-    step = 1
-    patience = 10
+    batchSize = 100
+    hiddenSize = 150
+    epoch = 50
+    lr = 0.002
+    lr_dc = 0.2
+    lr_dc_step = 5
+    l2 = 2e-5
+    step = 2
+    patience = 15
     nonhybrid = True
     validation = True
     valid_portion = 0.1
-    ssl_weight = 0.1
-    ssl_temperature = 0.07
-    ssl_item_drop_prob = 0.2
-    ssl_projection_dim = 50 # hiddenSize // 2
+    ssl_weight = 0.25
+    ssl_temperature = 0.12
+    ssl_item_drop_prob = 0.35
+    ssl_projection_dim = 75
     n_gpu = 0 # Default: 0, meaning auto-detect or CPU
     max_len = 50 # Max session length for position embedding, adjust based on dataset
-    position_emb_dim = 100 # Default: hiddenSize
+    position_emb_dim = 150 # Default: hiddenSize
 
 class Yoochoose_arg():
     dataset = 'yoochoose1_64'
-    batchSize = 75
-    hiddenSize = 120
-    epoch = 30
-    lr = 0.001
-    lr_dc = 0.1
-    lr_dc_step = 3
-    l2 = 1e-5
-    step = 1
-    patience = 10
+    batchSize = 100
+    hiddenSize = 150
+    epoch = 50
+    lr = 0.002
+    lr_dc = 0.2
+    lr_dc_step = 5
+    l2 = 2e-5
+    step = 2
+    patience = 15
     nonhybrid = True
     validation = True
     valid_portion = 0.1
-    ssl_weight = 0.1
-    ssl_temperature = 0.07
-    ssl_item_drop_prob = 0.2
-    ssl_projection_dim = 60 # hiddenSize // 2
+    ssl_weight = 0.25
+    ssl_temperature = 0.12
+    ssl_item_drop_prob = 0.35
+    ssl_projection_dim = 75
     n_gpu = 0 # Default: 0, meaning auto-detect or CPU
     max_len = 50 # Max session length, adjust based on dataset
-    position_emb_dim = 120 # Default: hiddenSize
+    position_emb_dim = 150 # Default: hiddenSize
 
 
 def main(opt):
@@ -191,8 +191,8 @@ if __name__ == '__main__':
     dataset_group.add_argument('--valid_portion', type=float, default=0.1, help='Validation split portion')
 
     model_group = parser.add_argument_group('Model Hyperparameters')
-    model_group.add_argument('--hiddenSize', type=int, default=100, help='Hidden state dimension')
-    model_group.add_argument('--step', type=int, default=1, help='GNN propagation steps')
+    model_group.add_argument('--hiddenSize', type=int, default=150, help='Hidden state dimension')
+    model_group.add_argument('--step', type=int, default=2, help='GNN propagation steps')
     model_group.add_argument('--nonhybrid', type=str2bool, default=True, help='Use non-hybrid scoring')
     model_group.add_argument('--max_len', type=int, default=50, help='Max session length for pos_emb (can be auto-adjusted)')
     model_group.add_argument('--position_emb_dim', type=int, default=0, help='Dim for position embeddings (0 uses hiddenSize)')
@@ -200,18 +200,18 @@ if __name__ == '__main__':
     train_group = parser.add_argument_group('Training Hyperparameters')
     train_group.add_argument('--defaults', type=str2bool, default=True, help='Use all default configurations for the chosen dataset')
     train_group.add_argument('--n_gpu', type=int, default=0, help='Num GPUs (0: auto/CPU)')
-    train_group.add_argument('--batchSize', type=int, default=50, help='Batch size')
-    train_group.add_argument('--epoch', type=int, default=30, help='Number of epochs')
-    train_group.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
-    train_group.add_argument('--lr_dc', type=float, default=0.1, help='LR decay rate')
-    train_group.add_argument('--lr_dc_step', type=int, default=3, help='Steps for LR decay')
-    train_group.add_argument('--l2', type=float, default=1e-5, help='L2 penalty')
-    train_group.add_argument('--patience', type=int, default=10, help='Early stopping patience')
+    train_group.add_argument('--batchSize', type=int, default=100, help='Batch size')
+    train_group.add_argument('--epoch', type=int, default=50, help='Number of epochs')
+    train_group.add_argument('--lr', type=float, default=0.002, help='Learning rate')
+    train_group.add_argument('--lr_dc', type=float, default=0.2, help='LR decay rate')
+    train_group.add_argument('--lr_dc_step', type=int, default=5, help='Steps for LR decay')
+    train_group.add_argument('--l2', type=float, default=2e-5, help='L2 penalty')
+    train_group.add_argument('--patience', type=int, default=15, help='Early stopping patience')
 
     ssl_group = parser.add_argument_group('Self-Supervised Learning (SSL) Hyperparameters')
-    ssl_group.add_argument('--ssl_weight', type=float, default=0.1, help='SSL loss weight')
-    ssl_group.add_argument('--ssl_temperature', type=float, default=0.07, help='SSL InfoNCE temperature')
-    ssl_group.add_argument('--ssl_item_drop_prob', type=float, default=0.2, help='SSL item drop probability')
+    ssl_group.add_argument('--ssl_weight', type=float, default=0.25, help='SSL loss weight')
+    ssl_group.add_argument('--ssl_temperature', type=float, default=0.12, help='SSL InfoNCE temperature')
+    ssl_group.add_argument('--ssl_item_drop_prob', type=float, default=0.35, help='SSL item drop probability')
     ssl_group.add_argument('--ssl_projection_dim', type=int, default=0, help='SSL projection head dim (0 for hiddenSize/2)')
 
     cmd_args = parser.parse_args()
