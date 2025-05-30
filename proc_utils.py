@@ -4,12 +4,12 @@
 
 import numpy as np
 import torch
+import random
 
 def split_validation(train_set, valid_portion):
     train_set_x, train_set_y = train_set
     n_samples = len(train_set_x)
-    sidx = np.arange(n_samples, dtype='int32')
-    np.random.shuffle(sidx)
+    sidx = np.random.permutation(n_samples)
     n_train = int(np.round(n_samples * (1. - valid_portion)))
     valid_set_x = [train_set_x[s] for s in sidx[n_train:]]
     valid_set_y = [train_set_y[s] for s in sidx[n_train:]]
@@ -19,20 +19,12 @@ def split_validation(train_set, valid_portion):
     return (train_set_x, train_set_y), (valid_set_x, valid_set_y)
 
 
-def data_masks(all_usr_pois, item_tail, max_len_for_batch=None):
+def data_masks(all_usr_pois, item_tail, max_len):
     us_lens = [len(upois) for upois in all_usr_pois]
-    len_max = max_len_for_batch if max_len_for_batch is not None else (max(us_lens) if us_lens else 0)
-
-    us_pois = [upois + item_tail * (len_max - le) if le < len_max else upois[:len_max]
-               for upois, le in zip(all_usr_pois, us_lens)]
-    us_msks = [[1] * (min(le, len_max)) + [0] * (len_max - min(le, len_max)) for le in us_lens]
-    
-    us_pos = []
-    for le in us_lens:
-        actual_len = min(le, len_max)
-        pos_seq = list(range(1, actual_len + 1)) + [0] * (len_max - actual_len)
-        us_pos.append(pos_seq)
-        
+    len_max = max(us_lens)
+    us_pois = [upois + item_tail * (len_max - le) for upois, le in zip(all_usr_pois, us_lens)]
+    us_msks = [[1] * le + [0] * (len_max - le) for le in us_lens]
+    us_pos = [list(range(le)) + [0] * (len_max - le) for le in us_lens]
     return us_pois, us_msks, us_pos, len_max
 
 
@@ -79,33 +71,19 @@ class Dataset():
         slices = [s for s in slices if len(s) > 0]
         return slices
 
-    def _augment_sequence_item_dropout(self, sequence, item_drop_prob, target_max_len):
-        # sequence is a raw, unpadded sequence from self.raw_inputs
-        if item_drop_prob == 0.0:
-            seq_list = list(sequence[:target_max_len]) # Truncate if longer
-            seq_list.extend([0] * (target_max_len - len(seq_list))) # Pad if shorter
-            return seq_list
-
-        original_len_no_pad = len(sequence) # Length of the raw sequence
+    def _augment_sequence_item_dropout(self, seq, drop_prob, max_len):
+        if drop_prob == 0:
+            return seq + [0] * (max_len - len(seq))
         
-        if original_len_no_pad <= 1: # Cannot meaningfully augment if too short
-            seq_list = list(sequence[:target_max_len])
-            seq_list.extend([0] * (target_max_len - len(seq_list)))
-            return seq_list
-
-        augmented_seq_items = []
-        for i in range(original_len_no_pad):
-            if torch.rand(1).item() >= item_drop_prob:
-                augmented_seq_items.append(sequence[i])
+        augmented_seq = []
+        for item in seq:
+            if random.random() > drop_prob:
+                augmented_seq.append(item)
         
-        if not augmented_seq_items and original_len_no_pad > 0: # Ensure at least one item remains
-            augmented_seq_items.append(sequence[0])
+        if len(augmented_seq) == 0:
+            augmented_seq = [seq[0]]  # Keep at least one item
             
-        # Pad with 0s to maintain target_max_len for the batch
-        # And truncate if augmented_seq_items became longer than target_max_len (shouldn't happen with dropout)
-        final_augmented_seq = augmented_seq_items[:target_max_len]
-        final_augmented_seq.extend([0] * (target_max_len - len(final_augmented_seq)))
-        return final_augmented_seq
+        return augmented_seq + [0] * (max_len - len(augmented_seq))
 
 
     def _get_graph_data_for_view(self, current_inputs_batch_padded_items):
