@@ -14,7 +14,7 @@ import torch.nn.functional as F
 
 
 class Attention_GNN(Module):
-    def __init__(self, hidden_size, step=1):
+    def __init__(self, hidden_size, step=2):
         super(Attention_GNN, self).__init__()
         self.step = step
         self.hidden_size = hidden_size
@@ -33,6 +33,10 @@ class Attention_GNN(Module):
             self.hidden_size, self.hidden_size, bias=True)
         self.linear_edge_f = nn.Linear( # This seems unused, but kept from original
             self.hidden_size, self.hidden_size, bias=True)
+        
+        # اضافه کردن dropout
+        self.dropout = nn.Dropout(0.2)
+        
         self.reset_parameters() # Initialize parameters
 
     def reset_parameters(self):
@@ -149,6 +153,10 @@ class Attention_GNN(Module):
         input_in = torch.matmul(input_in_adj, self.linear_edge_in(hidden)) + self.b_iah
         input_out = torch.matmul(input_out_adj, self.linear_edge_out(hidden)) + self.b_oah
 
+        # اعمال dropout
+        input_in = self.dropout(input_in)
+        input_out = self.dropout(input_out)
+
         inputs = torch.cat([input_in, input_out], 2)
         gi = F.linear(inputs, self.w_ih, self.b_ih)
         gh = F.linear(hidden, self.w_hh, self.b_hh)
@@ -188,7 +196,14 @@ class Attention_SessionGraph(Module):
 
         self.tagnn = Attention_GNN(self.hidden_size, step=opt.step)
         self.layer_norm1 = nn.LayerNorm(self.hidden_size)
-        self.attn = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=2, dropout=0.1, batch_first=True)
+        
+        # افزایش تعداد attention heads و اضافه کردن dropout
+        self.attn = nn.MultiheadAttention(
+            embed_dim=self.hidden_size,
+            num_heads=4,  # افزایش از 2 به 4
+            dropout=0.2,
+            batch_first=True
+        )
 
         self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_two = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
@@ -196,7 +211,8 @@ class Attention_SessionGraph(Module):
         self.linear_transform = nn.Linear(self.hidden_size * 2, self.hidden_size, bias=True)
         self.linear_t = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         
-        self.loss_function = nn.CrossEntropyLoss()
+        # اضافه کردن label smoothing به loss function
+        self.loss_function = nn.CrossEntropyLoss(label_smoothing=0.1)
 
         self.ssl_weight = opt.ssl_weight
         self.ssl_temperature = opt.ssl_temperature
@@ -207,6 +223,9 @@ class Attention_SessionGraph(Module):
             nn.Linear(self.hidden_size, projection_dim)
         )
         self.reset_parameters() # Call after all layers are defined
+        
+        # اضافه کردن dropout
+        self.dropout = nn.Dropout(0.2)
         
         self.optimizer = torch.optim.Adam(self.parameters(), lr=opt.lr, weight_decay=opt.l2)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=opt.lr_dc_step, gamma=opt.lr_dc)
@@ -274,6 +293,7 @@ class Attention_SessionGraph(Module):
 
     def forward(self, unique_item_inputs, A_matrix):
         hidden = self.embedding(unique_item_inputs) # [batch, max_unique_nodes, hidden_size]
+        hidden = self.dropout(hidden)  # اضافه کردن dropout
         hidden = self.tagnn(A_matrix, hidden)       # [batch, max_unique_nodes, hidden_size] (after GNN)
         
         transformer_key_padding_mask = (unique_item_inputs == self.embedding.padding_idx) # [N, S_unique]
@@ -282,7 +302,7 @@ class Attention_SessionGraph(Module):
         x = hidden # from GNN
         x_norm = self.layer_norm1(x) # Pre-LN
         x_attn, _ = self.attn(x_norm, x_norm, x_norm, key_padding_mask=transformer_key_padding_mask)
-        hidden = x + x_attn # Residual connection (x + Attn(Norm(x)))
+        hidden = x + self.dropout(x_attn)  # اضافه کردن dropout به خروجی attention
         
         return hidden
 
@@ -414,6 +434,10 @@ def train_test(model, train_data, test_data, opt, device):
         loss_ssl = model_module.calculate_infonce_loss(projected_emb_v1, projected_emb_v2)
 
         combined_loss = loss_main + model_module.ssl_weight * loss_ssl
+        
+        # اضافه کردن gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         combined_loss.backward()
         model_module.optimizer.step()
 
