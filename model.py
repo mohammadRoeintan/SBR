@@ -31,20 +31,20 @@ class Attention_GNN(Module):
             self.hidden_size, self.hidden_size, bias=True)
         self.linear_edge_out = nn.Linear(
             self.hidden_size, self.hidden_size, bias=True)
-        self.linear_edge_f = nn.Linear( 
+        self.linear_edge_f = nn.Linear(
             self.hidden_size, self.hidden_size, bias=True)
-        
+
         # اضافه کردن dropout
         self.dropout = nn.Dropout(0.2)
-        
+
         self.reset_parameters() # Initialize parameters
 
     def reset_parameters(self):
         stdv = 1.0 / math.sqrt(self.hidden_size)
         for weight in self.parameters():
-            if weight.dim() > 1: 
+            if weight.dim() > 1:
                  weight.data.uniform_(-stdv, stdv)
-            else: 
+            else:
                  weight.data.uniform_(-stdv, stdv)
         for layer in [self.linear_edge_in, self.linear_edge_out, self.linear_edge_f]:
             if hasattr(layer, 'weight') and layer.weight is not None:
@@ -59,7 +59,7 @@ class Attention_GNN(Module):
         # Ensure A has the correct feature dimension
         if A.shape[2] < expected_A_feature_dim:
             pad_size = expected_A_feature_dim - A.shape[2]
-            pad_tensor = torch.zeros(batch_size, A.shape[1], pad_size, 
+            pad_tensor = torch.zeros(batch_size, A.shape[1], pad_size,
                                     device=A.device, dtype=A.dtype)
             A_compat = torch.cat([A, pad_tensor], dim=2)
         elif A.shape[2] > expected_A_feature_dim:
@@ -101,7 +101,7 @@ class Attention_SessionGraph(Module):
         self.nonhybrid = opt.nonhybrid
 
         self.embedding = nn.Embedding(self.n_node, self.hidden_size, padding_idx=0)
-        
+
         self.max_len = opt.max_len
         self.position_emb_dim = opt.position_emb_dim
         if self.position_emb_dim != self.hidden_size:
@@ -110,12 +110,12 @@ class Attention_SessionGraph(Module):
         else:
             self.requires_projection = False
             self.position_proj = None
-            
+
         self.position_embedding = nn.Embedding(self.max_len + 1, self.position_emb_dim, padding_idx=0)
 
         self.tagnn = Attention_GNN(self.hidden_size, step=opt.step)
         self.layer_norm1 = nn.LayerNorm(self.hidden_size)
-        
+
         self.attn = nn.MultiheadAttention(
             embed_dim=self.hidden_size,
             num_heads=4,
@@ -128,7 +128,7 @@ class Attention_SessionGraph(Module):
         self.linear_three = nn.Linear(self.hidden_size, 1, bias=False)
         self.linear_transform = nn.Linear(self.hidden_size * 2, self.hidden_size, bias=True)
         self.linear_t = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
-        
+
         self.loss_function = nn.CrossEntropyLoss(label_smoothing=0.1)
 
         self.ssl_weight = opt.ssl_weight
@@ -140,9 +140,9 @@ class Attention_SessionGraph(Module):
             nn.Linear(self.hidden_size, projection_dim)
         )
         self.reset_parameters()
-        
+
         self.dropout = nn.Dropout(0.2)
-        
+
         self.optimizer = torch.optim.Adam(self.parameters(), lr=opt.lr, weight_decay=opt.l2)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=opt.lr_dc_step, gamma=opt.lr_dc)
 
@@ -150,7 +150,7 @@ class Attention_SessionGraph(Module):
     def reset_parameters(self):
         stdv = 1.0 / math.sqrt(self.hidden_size)
         for name, weight in self.named_parameters():
-            if name.startswith("tagnn."): 
+            if name.startswith("tagnn."):
                 continue
             if 'bias' in name:
                 nn.init.zeros_(weight)
@@ -161,7 +161,7 @@ class Attention_SessionGraph(Module):
                     nn.init.xavier_uniform_(weight)
                 elif weight.dim() > 1:
                     weight.data.uniform_(-stdv, stdv)
-        
+
         if self.embedding.padding_idx is not None:
             with torch.no_grad():
                 self.embedding.weight[self.embedding.padding_idx].fill_(0)
@@ -173,23 +173,23 @@ class Attention_SessionGraph(Module):
     def _get_seq_hidden_with_position(self, gnn_output_on_unique_nodes, alias_inputs_for_sequence, position_ids_for_sequence):
         batch_size = gnn_output_on_unique_nodes.size(0)
         max_seq_len_in_batch = alias_inputs_for_sequence.size(1)
-        
+
         alias_indices_expanded = alias_inputs_for_sequence.long().unsqueeze(-1).expand(-1, -1, self.hidden_size)
-        
+
         seq_item_hidden = torch.gather(
-            gnn_output_on_unique_nodes, 
-            1, 
+            gnn_output_on_unique_nodes,
+            1,
             alias_indices_expanded
         )
-            
+
         pos_embeds = self.position_embedding(position_ids_for_sequence.long())
-        
+
         if self.position_emb_dim == self.hidden_size:
             seq_hidden_final = seq_item_hidden + pos_embeds
         else:
             combined = torch.cat([seq_item_hidden, pos_embeds], dim=-1)
             seq_hidden_final = self.position_proj(combined)
-            
+
         return seq_hidden_final
 
 
@@ -197,12 +197,12 @@ class Attention_SessionGraph(Module):
         hidden = self.embedding(unique_item_inputs)
         hidden = self.dropout(hidden)
         hidden = self.tagnn(A_matrix, hidden)
-        
+
         transformer_key_padding_mask = (unique_item_inputs == self.embedding.padding_idx)
-        
+
         x = hidden
         x_norm = self.layer_norm1(x)
-        x_attn, _ = self.attn(x_norm, x_norm, x_norm, 
+        x_attn, _ = self.attn(x_norm, x_norm, x_norm,
                               key_padding_mask=transformer_key_padding_mask)
         hidden = x + self.dropout(x_attn)
 
@@ -210,42 +210,93 @@ class Attention_SessionGraph(Module):
 
 
     def compute_scores(self, seq_hidden_time_aware, mask_for_scoring):
+        # بررسی اینکه آیا تنسور ورودی خالی است یا خیر
+        if seq_hidden_time_aware.size(0) == 0 or seq_hidden_time_aware.size(1) == 0:
+            # اگر بچ خالی باشد یا طول توالی صفر باشد، یک تنسور امتیاز خالی یا مناسب برگردانید
+            # این قسمت بستگی به این دارد که در ادامه چه انتظاری از خروجی دارید
+            # برای مثال، برگرداندن یک تنسور خالی با شکل مناسب:
+            num_candidates = self.embedding.weight.size(0) -1 # تعداد کل آیتم‌های کاندید
+            return torch.empty(seq_hidden_time_aware.size(0), num_candidates, device=seq_hidden_time_aware.device)
+
+
         actual_lengths = torch.sum(mask_for_scoring, 1).long()
-        last_item_indices = torch.clamp(actual_lengths - 1, min=0)
-        
-        batch_indices = torch.arange(seq_hidden_time_aware.shape[0], 
+        # محدود کردن last_item_indices تا از ابعاد seq_hidden_time_aware تجاوز نکند
+        # seq_hidden_time_aware.shape[1] طول توالی است
+        # اندیس‌ها باید از 0 تا seq_hidden_time_aware.shape[1] - 1 باشند
+        # torch.clamp(min=0) از اندیس منفی جلوگیری می‌کند
+        # torch.clamp(max=...) از اندیس خیلی بزرگ جلوگیری می‌کند
+        # باید اطمینان حاصل کرد که seq_hidden_time_aware.shape[1] حداقل 1 است اگر از آن کم می‌کنیم
+        max_valid_index = seq_hidden_time_aware.shape[1] - 1
+        if max_valid_index < 0: # اگر طول توالی صفر باشد
+             # این حالت باید توسط شرط بالا گرفته شده باشد، اما برای اطمینان
+             # اگر به اینجا رسیدیم یعنی یک بچ با طول توالی صفر داریم
+             # رفتار مناسب در این حالت بستگی به منطق برنامه دارد
+             # برای مثال، همه اندیس‌ها را صفر در نظر بگیریم اگرچه ht خالی خواهد بود
+             last_item_indices = torch.zeros_like(actual_lengths, device=seq_hidden_time_aware.device)
+        else:
+            last_item_indices = torch.clamp(actual_lengths - 1, min=0, max=max_valid_index)
+
+
+        batch_indices = torch.arange(seq_hidden_time_aware.shape[0],
                                     device=seq_hidden_time_aware.device)
         ht = seq_hidden_time_aware[batch_indices, last_item_indices]
 
-        q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1])
+        # اطمینان از اینکه ht خالی نیست قبل از ارسال به لایه‌های خطی
+        if ht.size(0) == 0 : # اگر به دلیلی ht خالی شد (مثلا بچ اصلی خالی بود)
+            num_candidates = self.embedding.weight.size(0) -1
+            return torch.empty(0, num_candidates, device=seq_hidden_time_aware.device)
+
+
+        q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1]) # خطای قبلی در اینجا رخ داده بود
         q2 = self.linear_two(seq_hidden_time_aware)
-        
+
         alpha_logits = self.linear_three(torch.sigmoid(q1 + q2))
+        # اطمینان از اینکه mask_for_scoring دارای ابعاد صحیح برای broadcasting است
+        # mask_for_scoring.unsqueeze(-1) باید با alpha_logits هم‌شکل شود
         alpha_logits_masked = alpha_logits.masked_fill(mask_for_scoring.unsqueeze(-1) == 0, -1e9)
         alpha = F.softmax(alpha_logits_masked, dim=1)
-        
+
         a = torch.sum(alpha * seq_hidden_time_aware * mask_for_scoring.unsqueeze(-1).float(), dim=1)
 
         if not self.nonhybrid:
             a = self.linear_transform(torch.cat([a, ht], dim=1))
 
-        candidate_item_embeddings = self.embedding.weight[1:] 
+        candidate_item_embeddings = self.embedding.weight[1:]
         scores = torch.matmul(a, candidate_item_embeddings.transpose(0, 1))
         return scores
 
     def get_session_embedding_for_ssl(self, seq_hidden_time_aware, mask_for_ssl):
+        if seq_hidden_time_aware.size(0) == 0 or seq_hidden_time_aware.size(1) == 0:
+            # اگر بچ خالی یا طول توالی صفر باشد، یک تنسور با شکل مناسب برگردانید
+            # یا خطا ایجاد کنید اگر این حالت نباید رخ دهد
+             projection_dim_fallback = self.projection_head_ssl[-1].out_features if hasattr(self.projection_head_ssl[-1], 'out_features') else self.hidden_size
+             return torch.empty(seq_hidden_time_aware.size(0), projection_dim_fallback, device=seq_hidden_time_aware.device)
+
+
         actual_lengths = torch.sum(mask_for_ssl, 1).long()
-        last_item_indices = torch.clamp(actual_lengths - 1, min=0)
-        batch_indices = torch.arange(seq_hidden_time_aware.shape[0], 
+        max_valid_index_ssl = seq_hidden_time_aware.shape[1] - 1
+        if max_valid_index_ssl < 0:
+            last_item_indices = torch.zeros_like(actual_lengths, device=seq_hidden_time_aware.device)
+        else:
+            last_item_indices = torch.clamp(actual_lengths - 1, min=0, max=max_valid_index_ssl)
+
+        batch_indices = torch.arange(seq_hidden_time_aware.shape[0],
                                     device=seq_hidden_time_aware.device)
         session_repr = seq_hidden_time_aware[batch_indices, last_item_indices]
         return session_repr
 
     def calculate_infonce_loss(self, z1, z2):
+        # بررسی برای بچ‌های خالی یا ورودی‌های نامعتبر
+        if z1.size(0) == 0 or z2.size(0) == 0 :
+            return torch.tensor(0.0, device=z1.device if z1.size(0) > 0 else z2.device, requires_grad=True) # یا رفتار مناسب دیگر
+
         z1_norm = F.normalize(z1, dim=-1)
         z2_norm = F.normalize(z2, dim=-1)
         sim_matrix = torch.matmul(z1_norm, z2_norm.T) / self.ssl_temperature
-        labels = torch.arange(z1_norm.size(0)).long().to(z1_norm.device)
+        # اطمینان از اینکه تعداد برچسب‌ها با اندازه بچ z1_norm مطابقت دارد
+        if sim_matrix.size(0) == 0: # اگر sim_matrix به دلیلی خالی شد
+             return torch.tensor(0.0, device=sim_matrix.device, requires_grad=True)
+        labels = torch.arange(sim_matrix.size(0)).long().to(sim_matrix.device) # تغییر از z1_norm.device
         loss_ssl = F.cross_entropy(sim_matrix, labels)
         return loss_ssl
 
@@ -268,7 +319,7 @@ def train_test(model, train_data, test_data, opt, device):
         return 0.0, 0.0
 
     for i_slice_indices, j_batch_num in tqdm(zip(slices, np.arange(len(slices))), total=len(slices), desc=f"Epoch {opt.current_epoch_num} Training"):
-        if len(i_slice_indices) == 0: 
+        if len(i_slice_indices) == 0:
             continue
 
         model_module.optimizer.zero_grad()
@@ -276,8 +327,14 @@ def train_test(model, train_data, test_data, opt, device):
         ssl_drop_prob = opt.ssl_item_drop_prob
         data_v1, data_v2, targets_main_np, mask_main_np = train_data.get_slice(i_slice_indices, ssl_item_drop_prob=ssl_drop_prob)
 
-        if data_v1[0].size == 0 or data_v2[0].size == 0:
+        # بررسی برای داده‌های خالی از get_slice
+        if not isinstance(data_v1, tuple) or len(data_v1) < 3 or data_v1[2].size == 0: # items_v1_unique is data_v1[2]
+            print(f"Warning: Empty data_v1 for slice {i_slice_indices}. Skipping batch.")
             continue
+        if not isinstance(data_v2, tuple) or len(data_v2) < 3 or data_v2[2].size == 0: # items_v2_unique is data_v2[2]
+            print(f"Warning: Empty data_v2 for slice {i_slice_indices}. Skipping batch.")
+            continue
+
 
         alias_inputs_v1, A_v1, items_v1_unique, mask_v1_ssl, position_ids_v1 = data_v1
         alias_inputs_v2, A_v2, items_v2_unique, mask_v2_ssl, position_ids_v2 = data_v2
@@ -297,32 +354,67 @@ def train_test(model, train_data, test_data, opt, device):
         targets_main = torch.from_numpy(targets_main_np).long().to(device)
         mask_main = torch.from_numpy(mask_main_np).long().to(device)
 
+        # بررسی بچ‌های خالی قبل از ارسال به مدل
+        if items_v1_unique.size(0) == 0:
+            print(f"Warning: items_v1_unique is empty for slice {i_slice_indices}. Skipping batch.")
+            continue
+
         gnn_output_v1 = model(items_v1_unique, A_v1)
-        if gnn_output_v1.size(0) == 0:
+        if gnn_output_v1.size(0) == 0: # اگر مدل یک بچ خالی برگرداند
+            print(f"Warning: gnn_output_v1 is empty for slice {i_slice_indices}. Skipping batch.")
             continue
-            
+
         seq_hidden_v1_time_aware = model_module._get_seq_hidden_with_position(gnn_output_v1, alias_inputs_v1, position_ids_v1)
-        scores_main = model_module.compute_scores(seq_hidden_v1_time_aware, mask_main)
-        loss_main = model_module.loss_function(scores_main, targets_main - 1)
+        if seq_hidden_v1_time_aware.size(0) == 0 or seq_hidden_v1_time_aware.size(1) == 0 : # بررسی بچ و طول توالی
+            print(f"Warning: seq_hidden_v1_time_aware is empty or has zero sequence length for slice {i_slice_indices}. Skipping main loss calculation.")
+            loss_main = torch.tensor(0.0, device=device, requires_grad=True) # یا رفتار مناسب دیگر
+        else:
+            scores_main = model_module.compute_scores(seq_hidden_v1_time_aware, mask_main)
+            if scores_main.size(0) == 0 and targets_main.size(0) == 0: # اگر هر دو خالی باشند، لاس صفر است
+                 loss_main = torch.tensor(0.0, device=device, requires_grad=True)
+            elif scores_main.size(0) == 0 and targets_main.size(0) !=0: # حالت نامعتبر
+                 print(f"Error: scores_main is empty but targets_main is not for slice {i_slice_indices}. Skipping batch.")
+                 continue
+            else:
+                 loss_main = model_module.loss_function(scores_main, targets_main - 1)
 
-        session_emb_v1_ssl = model_module.get_session_embedding_for_ssl(seq_hidden_v1_time_aware, mask_v1_ssl)
-        
-        gnn_output_v2 = model(items_v2_unique, A_v2)
-        if gnn_output_v2.size(0) == 0:
-            continue
-        seq_hidden_v2_time_aware = model_module._get_seq_hidden_with_position(gnn_output_v2, alias_inputs_v2, position_ids_v2)
-        session_emb_v2_ssl = model_module.get_session_embedding_for_ssl(seq_hidden_v2_time_aware, mask_v2_ssl)
 
-        projected_emb_v1 = model_module.projection_head_ssl(session_emb_v1_ssl)
-        projected_emb_v2 = model_module.projection_head_ssl(session_emb_v2_ssl)
-        loss_ssl = model_module.calculate_infonce_loss(projected_emb_v1, projected_emb_v2)
+        # بخش SSL
+        if items_v2_unique.size(0) == 0:
+            print(f"Warning: items_v2_unique is empty for slice {i_slice_indices}. Skipping SSL part.")
+            loss_ssl = torch.tensor(0.0, device=device, requires_grad=True)
+        else:
+            session_emb_v1_ssl = model_module.get_session_embedding_for_ssl(seq_hidden_v1_time_aware, mask_v1_ssl)
+
+            gnn_output_v2 = model(items_v2_unique, A_v2)
+            if gnn_output_v2.size(0) == 0:
+                print(f"Warning: gnn_output_v2 is empty for slice {i_slice_indices}. Skipping SSL part.")
+                loss_ssl = torch.tensor(0.0, device=device, requires_grad=True)
+            else:
+                seq_hidden_v2_time_aware = model_module._get_seq_hidden_with_position(gnn_output_v2, alias_inputs_v2, position_ids_v2)
+                session_emb_v2_ssl = model_module.get_session_embedding_for_ssl(seq_hidden_v2_time_aware, mask_v2_ssl)
+
+                # بررسی خالی بودن قبل از projection_head_ssl
+                if session_emb_v1_ssl.size(0) == 0 or session_emb_v2_ssl.size(0) == 0:
+                    print(f"Warning: session_emb_v1_ssl or session_emb_v2_ssl is empty for slice {i_slice_indices}. Skipping SSL loss calculation.")
+                    loss_ssl = torch.tensor(0.0, device=device, requires_grad=True)
+                else:
+                    projected_emb_v1 = model_module.projection_head_ssl(session_emb_v1_ssl)
+                    projected_emb_v2 = model_module.projection_head_ssl(session_emb_v2_ssl)
+                    loss_ssl = model_module.calculate_infonce_loss(projected_emb_v1, projected_emb_v2)
+
 
         combined_loss = loss_main + model_module.ssl_weight * loss_ssl
-        
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        combined_loss.backward()
-        model_module.optimizer.step()
+
+        # بررسی اینکه آیا combined_loss نیاز به grad دارد یا خیر (اگر هر دو لاس صفر باشند و requires_grad=False)
+        if combined_loss.requires_grad:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            combined_loss.backward()
+            model_module.optimizer.step()
+        else: # اگر هیچ گرادیانی برای محاسبه وجود نداشته باشد (مثلا بچ کاملا خالی بود)
+            # print(f"Info: No gradients to backpropagate for slice {i_slice_indices}.")
+            pass
+
 
         total_loss_epoch += combined_loss.item()
         total_main_loss_epoch += loss_main.item()
@@ -332,7 +424,7 @@ def train_test(model, train_data, test_data, opt, device):
         if num_batches_processed > 0 and j_batch_num > 0 and len(slices) > 5 and j_batch_num % int(len(slices) / 5) == 0:
             print('[%d/%d] Total Loss: %.4f (Main: %.4f, SSL: %.4f)' %
                   (j_batch_num, len(slices), combined_loss.item(), loss_main.item(), loss_ssl.item()))
-    
+
     if num_batches_processed > 0:
         model_module.scheduler.step()
         avg_total_loss = total_loss_epoch / num_batches_processed
@@ -352,13 +444,15 @@ def train_test(model, train_data, test_data, opt, device):
 
     with torch.no_grad():
         for i_test_slice_indices in tqdm(slices_test, desc=f"Epoch {opt.current_epoch_num} Evaluation"):
-            if len(i_test_slice_indices) == 0: 
+            if len(i_test_slice_indices) == 0:
                 continue
 
             data_v1_test, _, targets_test_orig_np, mask_test_orig_np = test_data.get_slice(i_test_slice_indices, ssl_item_drop_prob=0.0)
-            
-            if data_v1_test[0].size == 0: 
+
+            if not isinstance(data_v1_test, tuple) or len(data_v1_test) < 3 or data_v1_test[2].size == 0: # items_eval_unique is data_v1_test[2]
+                print(f"Warning: Empty data_v1_test for eval slice {i_test_slice_indices}. Skipping.")
                 continue
+
 
             alias_inputs_eval, A_eval, items_eval_unique, _, position_ids_eval = data_v1_test
 
@@ -369,17 +463,27 @@ def train_test(model, train_data, test_data, opt, device):
             mask_test_orig_cuda = torch.from_numpy(mask_test_orig_np).long().to(device)
             targets_test_orig_cuda = torch.from_numpy(targets_test_orig_np).long().to(device)
 
+            if items_eval_unique.size(0) == 0:
+                print(f"Warning: items_eval_unique is empty for eval slice {i_test_slice_indices}. Skipping.")
+                continue
+
             gnn_output_eval = model(items_eval_unique, A_eval)
-            if gnn_output_eval.size(0) == 0: 
+            if gnn_output_eval.size(0) == 0:
+                print(f"Warning: gnn_output_eval is empty for eval slice {i_test_slice_indices}. Skipping.")
                 continue
 
             seq_hidden_eval_time_aware = model_module._get_seq_hidden_with_position(gnn_output_eval, alias_inputs_eval, position_ids_eval)
-            if seq_hidden_eval_time_aware.size(0) == 0: 
+            if seq_hidden_eval_time_aware.size(0) == 0 or seq_hidden_eval_time_aware.size(1) == 0:
+                print(f"Warning: seq_hidden_eval_time_aware is empty or has zero sequence length for eval slice {i_test_slice_indices}. Skipping.")
                 continue
-                
-            scores_eval = model_module.compute_scores(seq_hidden_eval_time_aware, mask_test_orig_cuda)
 
-            sub_scores_top20_indices = scores_eval.topk(20)[1]
+            scores_eval = model_module.compute_scores(seq_hidden_eval_time_aware, mask_test_orig_cuda)
+            if scores_eval.size(0) == 0: # اگر compute_scores یک بچ خالی برگرداند
+                 print(f"Warning: scores_eval is empty for eval slice {i_test_slice_indices}. Skipping metrics calculation for this batch.")
+                 continue
+
+
+            sub_scores_top20_indices = scores_eval.topk(min(20, scores_eval.size(1)))[1] # اطمینان از اینکه k از تعداد ستون‌ها بیشتر نباشد
             sub_scores_top20_indices_np = sub_scores_top20_indices.cpu().detach().numpy()
             targets_eval_np = targets_test_orig_cuda.cpu().detach().numpy() - 1
 
