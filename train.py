@@ -98,30 +98,27 @@ def main(opt):
     if opt.validation:
         train_data_raw, valid_data_raw = split_validation(train_data_raw, opt.valid_portion)
         test_data_raw = valid_data_raw
-        print(f'Using validation set ({len(valid_data_raw[0]) if valid_data_raw and len(valid_data_raw) > 0 else 0} sessions) for testing.')
+        print(f'Using validation set ({len(valid_data_raw[0])} sessions) for testing.')
     else:
-        print(f'Using full test set ({len(test_data_raw[0]) if test_data_raw and len(test_data_raw) > 0 else 0} sessions).')
-
-    if not train_data_raw or not train_data_raw[0]:
-        print("Error: Training data is empty or not loaded correctly.")
-        sys.exit(1)
+        print(f'Using full test set ({len(test_data_raw[0])} sessions).')
     print(f'Training set size: {len(train_data_raw[0])} sessions.')
-
 
     train_data_loader = Dataset(train_data_raw, shuffle=True, opt=opt)
     test_data_loader = Dataset(test_data_raw, shuffle=False, opt=opt)
     
     actual_dataset_max_len = train_data_loader.len_max
-    if opt.max_len < actual_dataset_max_len or opt.max_len == 0 : # If 0, it means auto-detect from dataset default
+    if opt.max_len < actual_dataset_max_len:
         print(f"Updating opt.max_len from {opt.max_len} to actual dataset max session length: {actual_dataset_max_len}")
         opt.max_len = actual_dataset_max_len
     
-    if opt.position_emb_dim == 0 or opt.position_emb_dim != opt.hiddenSize: # If 0, means use hiddenSize
-        if opt.position_emb_dim !=0 and opt.position_emb_dim != opt.hiddenSize:
-             print(f"Adjusting opt.position_emb_dim from {opt.position_emb_dim} to opt.hiddenSize ({opt.hiddenSize}) for additive combination.")
-        elif opt.position_emb_dim == 0:
-             print(f"Setting opt.position_emb_dim to opt.hiddenSize ({opt.hiddenSize}) as it was 0.")
+    if opt.position_emb_dim != opt.hiddenSize and opt.position_emb_dim == base_config.position_emb_dim : # if it's still the class default and not equal
+        print(f"Adjusting opt.position_emb_dim from {opt.position_emb_dim} to opt.hiddenSize ({opt.hiddenSize}) for additive combination.")
         opt.position_emb_dim = opt.hiddenSize
+
+    if opt.ssl_projection_dim == -1 or (opt.ssl_projection_dim == 0 and base_config.ssl_projection_dim != 0) :
+         opt.ssl_projection_dim = opt.hiddenSize // 2
+    elif opt.ssl_projection_dim == 0 and base_config.ssl_projection_dim == 0:
+         opt.ssl_projection_dim = opt.hiddenSize // 2
 
 
     if opt.dataset == 'diginetica': n_node = 43098
@@ -137,7 +134,7 @@ def main(opt):
     else: model = model_instance.to(device)
 
     print(f"Model initialized. n_node={n_node}, max_session_len_for_pos_emb={opt.max_len}, pos_emb_dim={opt.position_emb_dim}")
-    print(f"Hyperparameters: {vars(opt)}")
+    print(f"Final Hyperparameters for model: {vars(opt)}")
 
     start_time = time.time()
     best_result = [0.0, 0.0]; best_epoch = [0, 0]; bad_counter = 0
@@ -153,24 +150,22 @@ def main(opt):
         saved_this_epoch_path = ""
 
         if current_hit > best_result[0] - 1e-5 :
-            if abs(current_hit - best_result[0]) > 1e-5 or current_mrr > best_result[1] - 1e-5:
+            if abs(current_hit - best_result[0]) > 1e-5 or current_mrr > best_result[1] :
                 best_result[0] = current_hit; best_epoch[0] = epoch_num; flag = 1
                 saved_this_epoch_path = model_save_dir + f'epoch_{epoch_num}_recall_{current_hit:.4f}_mrr_{current_mrr:.4f}.pt'
                 state_to_save = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
                 torch.save(state_to_save, saved_this_epoch_path)
-                print(f"Saved best model (by Recall or improving MRR) to {saved_this_epoch_path}")
+                print(f"Saved best model (by Recall) to {saved_this_epoch_path}")
 
         if current_mrr > best_result[1] - 1e-5 :
-             if abs(current_mrr - best_result[1]) > 1e-5 or current_hit > best_result[0] - 1e-5 :
-                if not (abs(current_hit - best_result[0]) < 1e-5 and abs(current_mrr - best_result[1]) < 1e-5): # Avoid re-setting if already best by recall condition
-                    best_result[1] = current_mrr; best_epoch[1] = epoch_num; flag = 1
-                
+             if abs(current_mrr - best_result[1]) > 1e-5 or current_hit > best_result[0] :
+                best_result[1] = current_mrr; best_epoch[1] = epoch_num; flag = 1
                 mrr_save_path = model_save_dir + f'epoch_{epoch_num}_recall_{current_hit:.4f}_mrr_{current_mrr:.4f}.pt'
-                if mrr_save_path != saved_this_epoch_path : # Avoid saving twice if path is identical
+                if mrr_save_path != saved_this_epoch_path:
                     state_to_save = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
                     torch.save(state_to_save, mrr_save_path)
-                    print(f"Saved best model (by MRR or improving Recall) to {mrr_save_path}")
-                elif not saved_this_epoch_path and flag == 1 : # if it became the best for MRR and wasn't saved due to recall
+                    print(f"Saved best model (by MRR) to {mrr_save_path}")
+                elif not saved_this_epoch_path:
                     state_to_save = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
                     torch.save(state_to_save, mrr_save_path)
                     print(f"Saved best model (by MRR) to {mrr_save_path}")
@@ -189,89 +184,91 @@ if __name__ == '__main__':
     
     ds_group = parser.add_argument_group('Dataset Configuration')
     ds_group.add_argument('--dataset', default='diginetica', choices=['diginetica', 'yoochoose1_64'], help='Dataset name')
-    ds_group.add_argument('--validation', type=str2bool, default=None, help='Use validation split (Default: True for dataset classes)')
-    ds_group.add_argument('--valid_portion', type=float, default=-1.0, help='Validation split portion (Default: 0.1 for dataset classes)')
+    ds_group.add_argument('--validation', type=str2bool, default=None, metavar='BOOL', help='Use validation split (dataset default: True)')
+    ds_group.add_argument('--valid_portion', type=float, default=None, metavar='FLOAT', help='Validation split portion (dataset default: 0.1)')
 
     model_group = parser.add_argument_group('Model Hyperparameters')
-    model_group.add_argument('--hiddenSize', type=int, default=0, help='Hidden state dimension (0: use dataset class default)')
-    model_group.add_argument('--step', type=int, default=0, help='GNN propagation steps (0: use dataset class default)')
-    model_group.add_argument('--nonhybrid', type=str2bool, default=None, help='Use non-hybrid scoring (Default: True for dataset classes)')
-    model_group.add_argument('--max_len', type=int, default=0, help='Max session length for pos_emb (0: use dataset class default or auto-detect)')
-    model_group.add_argument('--position_emb_dim', type=int, default=0, help='Dimension for position embeddings (0: use hiddenSize)')
+    model_group.add_argument('--hiddenSize', type=int, default=None, metavar='INT', help='Hidden state dimension (dataset default)')
+    model_group.add_argument('--step', type=int, default=None, metavar='INT', help='GNN propagation steps (dataset default)')
+    model_group.add_argument('--nonhybrid', type=str2bool, default=None, metavar='BOOL', help='Use non-hybrid scoring (dataset default: True)')
+    model_group.add_argument('--max_len', type=int, default=None, metavar='INT', help='Max session length for pos_emb (dataset default or auto-detect)')
+    model_group.add_argument('--position_emb_dim', type=int, default=None, metavar='INT', help='Dimension for position embeddings (dataset default: hiddenSize)')
 
     train_group = parser.add_argument_group('Training Hyperparameters')
-    train_group.add_argument('--defaults', type=str2bool, default=True, help='Use all default configurations from the chosen dataset class. CMD args can override.')
-    train_group.add_argument('--n_gpu', type=int, default=0, help='Num GPUs (0: auto/CPU, >0: specific count)')
-    train_group.add_argument('--batchSize', type=int, default=0, help='Batch size (0: use dataset class default)')
-    train_group.add_argument('--epoch', type=int, default=0, help='Number of epochs (0: use dataset class default)')
-    train_group.add_argument('--lr', type=float, default=0.0, help='Learning rate (0.0: use dataset class default)')
-    train_group.add_argument('--lr_dc', type=float, default=0.0, help='LR decay rate (0.0: use dataset class default)')
-    train_group.add_argument('--lr_dc_step', type=int, default=0, help='Steps for LR decay (0: use dataset class default)')
-    train_group.add_argument('--l2', type=float, default=-1.0, help='L2 penalty (-1.0: use dataset class default, to distinguish from 0.0)')
-    train_group.add_argument('--patience', type=int, default=0, help='Early stopping patience (0: use dataset class default)')
+    train_group.add_argument('--defaults', type=str2bool, default=True, metavar='BOOL', help='Use all default configurations for the chosen dataset')
+    train_group.add_argument('--n_gpu', type=int, default=None, metavar='INT', help='Num GPUs (dataset default: 0, meaning auto/CPU)')
+    train_group.add_argument('--batchSize', type=int, default=None, metavar='INT', help='Batch size (dataset default)')
+    train_group.add_argument('--epoch', type=int, default=None, metavar='INT', help='Number of epochs (dataset default)')
+    train_group.add_argument('--lr', type=float, default=None, metavar='FLOAT', help='Learning rate (dataset default)')
+    train_group.add_argument('--lr_dc', type=float, default=None, metavar='FLOAT', help='LR decay rate (dataset default)')
+    train_group.add_argument('--lr_dc_step', type=int, default=None, metavar='INT', help='Steps for LR decay (dataset default)')
+    train_group.add_argument('--l2', type=float, default=None, metavar='FLOAT', help='L2 penalty (dataset default)')
+    train_group.add_argument('--patience', type=int, default=None, metavar='INT', help='Early stopping patience (dataset default)')
 
     ssl_group = parser.add_argument_group('Self-Supervised Learning (SSL) Hyperparameters')
-    ssl_group.add_argument('--ssl_weight', type=float, default=-1.0, help='SSL loss weight (-1.0: use dataset class default)')
-    ssl_group.add_argument('--ssl_temperature', type=float, default=-1.0, help='SSL InfoNCE temperature (-1.0: use dataset class default)')
-    ssl_group.add_argument('--ssl_item_drop_prob', type=float, default=-1.0, help='SSL item drop probability (-1.0: use dataset class default)')
-    ssl_group.add_argument('--ssl_projection_dim', type=int, default=-1, help='SSL projection head dim (-1: use dataset class default, 0 means hiddenSize/2)')
+    ssl_group.add_argument('--ssl_weight', type=float, default=None, metavar='FLOAT', help='SSL loss weight (dataset default)')
+    ssl_group.add_argument('--ssl_temperature', type=float, default=None, metavar='FLOAT', help='SSL InfoNCE temperature (dataset default)')
+    ssl_group.add_argument('--ssl_item_drop_prob', type=float, default=None, metavar='FLOAT', help='SSL item drop probability (dataset default)')
+    ssl_group.add_argument('--ssl_projection_dim', type=int, default=None, metavar='INT', help='SSL projection head dim (dataset default: hiddenSize/2)')
 
-    cmd_opt = parser.parse_args()
-    
-    # Determine the base configuration class
-    if cmd_opt.dataset == 'diginetica':
-        base_config_class = Diginetica_arg
-    elif cmd_opt.dataset == 'yoochoose1_64':
-        base_config_class = Yoochoose_arg
-    else:
-        print(f"FATAL: Unknown dataset '{cmd_opt.dataset}' for loading base configurations.")
-        sys.exit(1)
-    
-    base_config = base_config_class()
-    
-    # Initialize final 'opt' with attributes from base_config_class
-    # This ensures all necessary attributes are present.
-    opt = argparse.Namespace(**vars(base_config))
+    cmd_args = parser.parse_args()
+    base_config = None
 
-    # If --defaults is True, explicit command-line arguments override the class defaults.
-    # If --defaults is False, command-line arguments are primary;
-    #   if a CMD arg is not provided (left at its parser default), then the class default is used.
+    if cmd_args.dataset == 'diginetica': base_config = Diginetica_arg()
+    elif cmd_args.dataset == 'yoochoose1_64': base_config = Yoochoose_arg()
+    else: print(f"FATAL: Unknown dataset '{cmd_args.dataset}'"); sys.exit(1)
+
+    # Initialize final_opt with a copy of the base configuration for the selected dataset
+    final_opt_vars = vars(base_config).copy()
+
+    if cmd_args.defaults:
+        print("INFO: Using dataset default configurations. Explicit command-line arguments will override specific defaults.")
+        # Override specific defaults if a command-line argument was explicitly provided (i.e., not None)
+        for key, cmd_value in vars(cmd_args).items():
+            if cmd_value is not None and key != 'defaults': # 'defaults' arg itself is not a config
+                if key in final_opt_vars:
+                    # print(f"Overriding '{key}': from '{final_opt_vars[key]}' to CMD '{cmd_value}'")
+                    final_opt_vars[key] = cmd_value
+                else:
+                    # This case should ideally not happen if all parser args are in base_config classes
+                    # print(f"Warning: CMD arg '{key}' not in base_config class, adding it.")
+                    final_opt_vars[key] = cmd_value
+
+    else: # Not using dataset defaults primarily. CMD args are king.
+        print("INFO: NOT using all dataset defaults. Command-line arguments take precedence.")
+        print("      Any command-line argument NOT provided will use the dataset's class default for that argument.")
+        cmd_vars = vars(cmd_args)
+        for key_in_base, base_value in vars(base_config).items():
+            if key_in_base in cmd_vars: # If this base config key is also a cmd arg
+                cmd_value_for_key = cmd_vars[key_in_base]
+                if cmd_value_for_key is not None: # If user set it specifically via CMD
+                    final_opt_vars[key_in_base] = cmd_value_for_key
+                # Else (user did not set it, it's None), final_opt_vars keeps the base_config value (already there)
+            # Else (key_in_base not a cmd_arg), final_opt_vars keeps the base_config value
+
+        # Add any cmd_args that were not in base_config (e.g., 'defaults' itself)
+        for key_cmd, val_cmd in cmd_vars.items():
+            if key_cmd not in final_opt_vars and val_cmd is not None : # Also check val_cmd is not None
+                final_opt_vars[key_cmd] = val_cmd
+
+
+    opt = argparse.Namespace(**final_opt_vars)
+
+    # --- Post-processing and defaulting calculated values ---
+    # Ensure these critical calculated fields are set if they relied on a 'None' or sentinel from parser
+    # or if their base_config value indicates they should be calculated.
     
-    if cmd_opt.defaults:
-        print("Using dataset default configurations. Explicit command-line arguments will override specific defaults.")
-        for key, cmd_value in vars(cmd_opt).items():
-            # Override if the cmd_value is different from its parser's default,
-            # ensuring user-provided values take precedence.
-            if cmd_value != parser.get_default(key):
-                if hasattr(opt, key):
-                    # print(f"Overriding default '{key}' from '{getattr(opt, key)}' with command-line value: {cmd_value}")
-                    setattr(opt, key, cmd_value)
-                # else: # For cmd_opt specific args like 'defaults' itself
-                      # setattr(opt, key, cmd_value) # This line can add 'defaults' to opt if needed, usually not.
-    else:
-        print("NOT using dataset default configurations primarily. Command-line arguments take precedence.")
-        print("Any command-line argument left at its parser default will use the dataset's class default for that argument.")
-        for key, default_class_value in vars(base_config).items():
-            cmd_value = getattr(cmd_opt, key, None) # Get value from cmd_opt if it exists
-            parser_default_value = parser.get_default(key)
-            if cmd_value is not None and cmd_value != parser_default_value: # User provided a specific value for this key
-                setattr(opt, key, cmd_value)
-            # Else (user did not provide a specific value, or key not in cmd_opt), 'opt' already has 'default_class_value'
-            
-    # Final calculations for special-case parameters
-    # Ensure ssl_projection_dim is correctly derived if set to indicator values
-    if opt.ssl_projection_dim == -1: # -1 means use class default, which might be a value or calculated
-        opt.ssl_projection_dim = base_config.ssl_projection_dim # Re-fetch from pristine base_config if needed
-        if opt.ssl_projection_dim == 0 or opt.ssl_projection_dim == base_config.hiddenSize // 2 : # If class default was 0 or correctly calculated
-             opt.ssl_projection_dim = opt.hiddenSize // 2
-    elif opt.ssl_projection_dim == 0 : # If explicitly set to 0 via CMD (and not handled above)
+    # SSL Projection Dimension
+    if opt.ssl_projection_dim is None or opt.ssl_projection_dim == 0 : # 0 was a special value in prev logic, None is from parser default now
         opt.ssl_projection_dim = opt.hiddenSize // 2
+        print(f"INFO: Setting ssl_projection_dim to hiddenSize//2 = {opt.ssl_projection_dim}")
 
-    # position_emb_dim: 0 means use hiddenSize
-    if opt.position_emb_dim == 0:
+    # Position Embedding Dimension
+    if opt.position_emb_dim is None or opt.position_emb_dim == 0:
         opt.position_emb_dim = opt.hiddenSize
+        print(f"INFO: Setting position_emb_dim to hiddenSize = {opt.position_emb_dim}")
         
-    # max_len: 0 means it will be auto-detected in main() after data loading.
-    # No change needed here, main() handles it.
+    # max_len will be refined in main() after loading data if it's still the class default (e.g. 50)
+    # and actual data has longer sequences.
 
     main(opt)
