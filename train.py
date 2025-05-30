@@ -6,7 +6,7 @@ import os
 
 import torch
 from proc_utils import Dataset, split_validation
-from model import Attention_SessionGraph, train_test
+from model import Attention_SessionGraph, train_test # Only import what's needed directly
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -32,7 +32,7 @@ class Diginetica_arg():
     ssl_item_drop_prob = 0.2
     ssl_projection_dim = 50 # hiddenSize // 2
     n_gpu = 0 # Default: 0, meaning auto-detect or CPU
-    max_len = 50
+    max_len = 50 # Max session length for position embedding, adjust based on dataset
     position_emb_dim = 100 # Default: hiddenSize
 
 class Yoochoose_arg():
@@ -54,15 +54,16 @@ class Yoochoose_arg():
     ssl_item_drop_prob = 0.2
     ssl_projection_dim = 60 # hiddenSize // 2
     n_gpu = 0 # Default: 0, meaning auto-detect or CPU
-    max_len = 50
+    max_len = 50 # Max session length, adjust based on dataset
     position_emb_dim = 120 # Default: hiddenSize
 
 
 def main(opt):
     model_save_dir = 'saved_ssl_time/'
-    log_dir = 'logs_ssl_time/'
+    log_dir = 'logs_ssl_time/' # Ensure this is different or specific
 
-    for directory in [model_save_dir, log_dir]:
+    for_makedirs = [model_save_dir, log_dir]
+    for directory in for_makedirs:
         if not os.path.exists(directory):
             os.makedirs(directory)
             print(f"Directory {directory} created.")
@@ -72,7 +73,7 @@ def main(opt):
     if torch.cuda.is_available():
         n_gpu_available = torch.cuda.device_count()
         print(f"Number of GPUs available: {n_gpu_available}")
-        if opt.n_gpu == 0 and n_gpu_available >= 1: # If opt.n_gpu is its parser default (0) and GPUs exist
+        if opt.n_gpu == 0 and n_gpu_available >= 1:
             print(f"Auto-detected {n_gpu_available} GPUs. Using all available.")
             opt.n_gpu = n_gpu_available
         elif opt.n_gpu > n_gpu_available:
@@ -109,15 +110,15 @@ def main(opt):
     test_data_loader = Dataset(test_data_raw, shuffle=False, opt=opt)
     
     actual_dataset_max_len = train_data_loader.len_max
-    if opt.max_len == 0 or opt.max_len < actual_dataset_max_len: # If parser default 0 or class default is too small
+    if opt.max_len == 0 or opt.max_len < actual_dataset_max_len:
         print(f"Updating opt.max_len from {opt.max_len} to actual dataset max session length: {actual_dataset_max_len}")
         opt.max_len = actual_dataset_max_len
     
-    if opt.position_emb_dim == 0 or opt.position_emb_dim != opt.hiddenSize : # 0 means use hiddenSize, or if it's set differently by chance
+    if opt.position_emb_dim == 0 : # If parser default 0 means use hiddenSize
         print(f"Adjusting opt.position_emb_dim from {opt.position_emb_dim} to opt.hiddenSize ({opt.hiddenSize}).")
         opt.position_emb_dim = opt.hiddenSize
         
-    if opt.ssl_projection_dim == 0: # 0 means use hiddenSize // 2
+    if opt.ssl_projection_dim == 0: # If parser default 0 means use hiddenSize // 2
         opt.ssl_projection_dim = opt.hiddenSize // 2
         print(f"Setting opt.ssl_projection_dim to hiddenSize // 2 = {opt.ssl_projection_dim}")
 
@@ -183,7 +184,7 @@ def main(opt):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    # --- Grouped Arguments ---
+    # --- Grouped Arguments with specific defaults ---
     dataset_group = parser.add_argument_group('Dataset Configuration')
     dataset_group.add_argument('--dataset', default='diginetica', choices=['diginetica', 'yoochoose1_64'], help='Dataset name')
     dataset_group.add_argument('--validation', type=str2bool, default=True, help='Use validation split')
@@ -193,12 +194,12 @@ if __name__ == '__main__':
     model_group.add_argument('--hiddenSize', type=int, default=100, help='Hidden state dimension')
     model_group.add_argument('--step', type=int, default=1, help='GNN propagation steps')
     model_group.add_argument('--nonhybrid', type=str2bool, default=True, help='Use non-hybrid scoring')
-    model_group.add_argument('--max_len', type=int, default=50, help='Max session length for pos_emb (can be auto-adjusted from data)')
-    model_group.add_argument('--position_emb_dim', type=int, default=0, help='Dimension for position embeddings (0 uses hiddenSize)')
+    model_group.add_argument('--max_len', type=int, default=50, help='Max session length for pos_emb (can be auto-adjusted)')
+    model_group.add_argument('--position_emb_dim', type=int, default=0, help='Dim for position embeddings (0 uses hiddenSize)') # Default 0
 
     train_group = parser.add_argument_group('Training Hyperparameters')
     train_group.add_argument('--defaults', type=str2bool, default=True, help='Use all default configurations for the chosen dataset')
-    train_group.add_argument('--n_gpu', type=int, default=0, help='Num GPUs (0: auto/CPU)')
+    train_group.add_argument('--n_gpu', type=int, default=0, help='Num GPUs (0: auto/CPU)') # Default 0
     train_group.add_argument('--batchSize', type=int, default=50, help='Batch size')
     train_group.add_argument('--epoch', type=int, default=30, help='Number of epochs')
     train_group.add_argument('--lr', type=float, default=1e-3, help='Learning rate')
@@ -211,53 +212,64 @@ if __name__ == '__main__':
     ssl_group.add_argument('--ssl_weight', type=float, default=0.1, help='SSL loss weight')
     ssl_group.add_argument('--ssl_temperature', type=float, default=0.07, help='SSL InfoNCE temperature')
     ssl_group.add_argument('--ssl_item_drop_prob', type=float, default=0.2, help='SSL item drop probability')
-    ssl_group.add_argument('--ssl_projection_dim', type=int, default=0, help='SSL projection head dim (0 for hiddenSize/2)')
+    ssl_group.add_argument('--ssl_projection_dim', type=int, default=0, help='SSL projection head dim (0 for hiddenSize/2)') # Default 0
 
     cmd_args = parser.parse_args()
     
     # --- Configuration Loading and Merging ---
+    # Start with an empty Namespace or directly from cmd_args if not using class defaults as base
+    opt = argparse.Namespace()
+
     if cmd_args.defaults:
         print("INFO: Using dataset default configurations as a base.")
         if cmd_args.dataset == 'diginetica':
             base_config = Diginetica_arg()
         elif cmd_args.dataset == 'yoochoose1_64':
             base_config = Yoochoose_arg()
-        else: # Should not happen due to choices in parser
+        else:
             print(f"FATAL: Unknown dataset '{cmd_args.dataset}' for default configurations."); sys.exit(1)
         
-        opt = argparse.Namespace(**vars(base_config)) # Start with base config
+        # Populate opt with base_config
+        for key, value in vars(base_config).items():
+            setattr(opt, key, value)
         
         # Override with any explicitly passed command-line args
         # An argument is considered "explicitly passed" if its value is different from
         # the default value defined in `parser.add_argument()`.
         for key, cmd_value in vars(cmd_args).items():
-            if cmd_value != parser.get_default(key): # If user provided a value different from parser's default for this arg
-                if hasattr(opt, key):
-                    # print(f"Overriding '{key}': from base_config '{getattr(opt, key)}' to CMD '{cmd_value}'")
-                    setattr(opt, key, cmd_value)
-                else: # If the cmd_arg is not in base_config (e.g. 'defaults' itself)
-                    setattr(opt, key, cmd_value) # Add it to opt
-    else:
+            if cmd_value != parser.get_default(key):
+                # print(f"Overriding '{key}': from base_config '{getattr(opt, key, 'N/A')}' to CMD '{cmd_value}'")
+                setattr(opt, key, cmd_value)
+            elif not hasattr(opt, key): # If arg is not in base_config (e.g. 'defaults' itself)
+                 setattr(opt, key, cmd_value)
+
+
+    else: # Not using dataset defaults primarily. CMD args are king.
         print("INFO: NOT using dataset default configurations. Using command-line arguments directly.")
         # All values will come from cmd_args. The defaults in add_argument are used if user doesn't specify.
         opt = cmd_args
 
     # --- Post-processing for calculated/dependent defaults ---
-    # These are applied *after* cmd_args and base_config defaults are merged.
-    # The user's explicit CMD arg for these specific calculated fields should take precedence if provided.
+    # This section is now called *after* opt is fully populated either from base_config+cmd_overrides
+    # or directly from cmd_args.
 
-    # If ssl_projection_dim was left as 0 by parser default (and not overridden by a dataset class if defaults=True)
-    # or if it's 0 from a dataset class default, calculate it.
+    # If ssl_projection_dim is 0 (its parser default, or from class default that means "calculate")
     if opt.ssl_projection_dim == 0:
+        if not hasattr(opt, 'hiddenSize'): # Should always be there if base_config was used or parser default used
+             print("FATAL: hiddenSize not found in opt for calculating ssl_projection_dim. Check argument parsing.")
+             sys.exit(1)
         opt.ssl_projection_dim = opt.hiddenSize // 2
         # print(f"INFO: Calculated ssl_projection_dim: {opt.ssl_projection_dim} (based on hiddenSize: {opt.hiddenSize})")
 
-    # If position_emb_dim was left as 0 by parser default or class default, set to hiddenSize.
+    # If position_emb_dim is 0 (its parser default, or from class default that means "use hiddenSize")
     if opt.position_emb_dim == 0:
+        if not hasattr(opt, 'hiddenSize'):
+             print("FATAL: hiddenSize not found in opt for calculating position_emb_dim. Check argument parsing.")
+             sys.exit(1)
         opt.position_emb_dim = opt.hiddenSize
         # print(f"INFO: Set position_emb_dim to hiddenSize: {opt.position_emb_dim}")
         
-    # opt.max_len will be refined in main() after loading data if it's still its initial default (e.g. 50 or from class)
-    # and actual data has longer sequences.
+    # opt.max_len will be refined in main() after loading data if it's still its initial default
+    # from parser or class, and actual data has longer sequences.
 
     main(opt)
