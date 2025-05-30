@@ -12,8 +12,6 @@ from torch import nn
 from torch.nn import Module, Parameter
 import torch.nn.functional as F
 
-# from agc import AGC # Already removed
-
 
 class Attention_GNN(Module):
     def __init__(self, hidden_size, step=1):
@@ -33,15 +31,39 @@ class Attention_GNN(Module):
             self.hidden_size, self.hidden_size, bias=True)
         self.linear_edge_out = nn.Linear(
             self.hidden_size, self.hidden_size, bias=True)
-        self.linear_edge_f = nn.Linear(
+        self.linear_edge_f = nn.Linear( # This seems unused, but kept from original
             self.hidden_size, self.hidden_size, bias=True)
 
     def GNNCell(self, A, hidden):
-        input_in = torch.matmul(A[:, :, :A.shape[1]], # Corrected slicing for A
-                                self.linear_edge_in(hidden)) + self.b_iah
+        # A: [batch, max_unique_nodes, 2 * max_unique_nodes]
+        # hidden: [batch, max_unique_nodes, hidden_size]
+        num_nodes_in_hidden = hidden.shape[1]
 
-        input_out = torch.matmul(
-            A[:, :, A.shape[1]: 2 * A.shape[1]], self.linear_edge_out(hidden)) + self.b_oah # Corrected slicing for A
+        # Ensure A's relevant dimension matches hidden's node dimension
+        if A.shape[1] != num_nodes_in_hidden or A.shape[2] != 2 * num_nodes_in_hidden:
+            # This might occur if batch_max_n_node used in A construction differs from hidden.shape[1]
+            # Or if A is not correctly shaped as N x 2N.
+            # A robust GNN cell might need to handle A parts separately or ensure consistency.
+            # For now, assume A is correctly formed based on the number of nodes present in `hidden`.
+            # This means A should be [batch, num_nodes_in_hidden, 2 * num_nodes_in_hidden]
+            # A simple fix if A is larger due to batch padding: slice A
+            if A.shape[1] > num_nodes_in_hidden:
+                A = A[:, :num_nodes_in_hidden, :2*num_nodes_in_hidden]
+            # If A is still not matching, this indicates a deeper issue in graph construction / batching
+            if A.shape[2] != 2 * num_nodes_in_hidden:
+                 print(f"Warning: GNNCell A shape {A.shape} mismatch with hidden shape {hidden.shape}. Graph processing might be incorrect.")
+                 # Fallback, assuming A is [N, N] for in and [N, N] for out, concatenated.
+                 # This part needs to be certain based on how A is constructed.
+                 # The current A construction aims for A_in and A_out based on max_n_node_batch, then concatenated.
+                 # So hidden.shape[1] should indeed be this max_n_node_batch.
+                 input_in_adj = A[:, :, :num_nodes_in_hidden]
+                 input_out_adj = A[:, :, num_nodes_in_hidden:2*num_nodes_in_hidden] # if A is N x 2N
+            else:
+                 input_in_adj = A[:, :, :num_nodes_in_hidden]
+                 input_out_adj = A[:, :, num_nodes_in_hidden:2*num_nodes_in_hidden]
+
+        input_in = torch.matmul(input_in_adj, self.linear_edge_in(hidden)) + self.b_iah
+        input_out = torch.matmul(input_out_adj, self.linear_edge_out(hidden)) + self.b_oah
 
         inputs = torch.cat([input_in, input_out], 2)
         gi = F.linear(inputs, self.w_ih, self.b_ih)
@@ -65,360 +87,272 @@ class Attention_SessionGraph(Module):
         super(Attention_SessionGraph, self).__init__()
         self.hidden_size = opt.hiddenSize
         self.n_node = n_node
-        self.batch_size = opt.batchSize # Note: batch_size can vary for the last batch
         self.nonhybrid = opt.nonhybrid
-        self.embedding = nn.Embedding(self.n_node, self.hidden_size, padding_idx=0) # Assuming 0 is padding
+
+        self.embedding = nn.Embedding(self.n_node, self.hidden_size, padding_idx=0)
+        
+        self.max_len = opt.max_len
+        self.position_emb_dim = opt.position_emb_dim
+        if self.position_emb_dim != self.hidden_size:
+            print(f"Warning: position_emb_dim ({self.position_emb_dim}) is not equal to hidden_size ({self.hidden_size}). "
+                  "Ensure combination logic (e.g., projection or careful concatenation) is correctly handled if not using addition.")
+            # For addition, they should be equal. If using concatenation, this is fine.
+            # The current _get_seq_hidden_with_position uses addition.
+            # Forcing them to be equal for addition if not specified.
+            # self.position_emb_dim = self.hidden_size # Or handle projection
+            
+        self.position_embedding = nn.Embedding(self.max_len + 1, self.position_emb_dim, padding_idx=0)
+
         self.tagnn = Attention_GNN(self.hidden_size, step=opt.step)
-
         self.layer_norm1 = nn.LayerNorm(self.hidden_size)
-        self.attn = nn.MultiheadAttention( # Transformer Encoder part
-            embed_dim=self.hidden_size, num_heads=2, dropout=0.1, batch_first=True) # Added batch_first=True
+        self.attn = nn.MultiheadAttention(embed_dim=self.hidden_size, num_heads=2, dropout=0.1, batch_first=True)
 
-        self.linear_one = nn.Linear(
-            self.hidden_size, self.hidden_size, bias=True)
-        self.linear_two = nn.Linear(
-            self.hidden_size, self.hidden_size, bias=True)
+        self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
+        self.linear_two = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_three = nn.Linear(self.hidden_size, 1, bias=False)
-        self.linear_transform = nn.Linear(
-            self.hidden_size * 2, self.hidden_size, bias=True)
-        self.linear_t = nn.Linear( # target attention for candidate items
-            self.hidden_size, self.hidden_size, bias=False)
+        self.linear_transform = nn.Linear(self.hidden_size * 2, self.hidden_size, bias=True)
+        self.linear_t = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
         
         self.loss_function = nn.CrossEntropyLoss()
-        self.optimizer = torch.optim.Adam(
-            self.parameters(), lr=opt.lr, weight_decay=opt.l2)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(
-            self.optimizer, step_size=opt.lr_dc_step, gamma=opt.lr_dc)
 
-        # SSL specific parameters
-        self.ssl_weight = opt.ssl_weight if hasattr(opt, 'ssl_weight') else 0.1
-        self.ssl_temperature = opt.ssl_temperature if hasattr(opt, 'ssl_temperature') else 0.07
-        projection_dim = opt.ssl_projection_dim if hasattr(opt, 'ssl_projection_dim') else self.hidden_size // 2
+        self.ssl_weight = opt.ssl_weight
+        self.ssl_temperature = opt.ssl_temperature
+        projection_dim = opt.ssl_projection_dim
         self.projection_head_ssl = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size), # First layer of projection
+            nn.Linear(self.hidden_size, self.hidden_size),
             nn.ReLU(inplace=True),
-            nn.Linear(self.hidden_size, projection_dim) # Second layer to final projection dim
+            nn.Linear(self.hidden_size, projection_dim)
         )
         self.reset_parameters()
+        
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=opt.lr, weight_decay=opt.l2)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=opt.lr_dc_step, gamma=opt.lr_dc)
+
 
     def reset_parameters(self):
         stdv = 1.0 / math.sqrt(self.hidden_size)
-        for weight in self.parameters():
-            weight.data.uniform_(-stdv, stdv)
-        # Ensure padding_idx in embedding is zeroed out if used and not trained
+        for name, weight in self.named_parameters():
+            if 'bias' in name:
+                nn.init.zeros_(weight)
+            else:
+                if 'embedding.weight' in name: # Item embedding
+                    nn.init.xavier_uniform_(weight)
+                elif 'position_embedding.weight' in name: # Position embedding
+                    nn.init.xavier_uniform_(weight)
+                else:
+                    weight.data.uniform_(-stdv, stdv)
+        
         if self.embedding.padding_idx is not None:
             with torch.no_grad():
                 self.embedding.weight[self.embedding.padding_idx].fill_(0)
+        if self.position_embedding.padding_idx is not None:
+            with torch.no_grad():
+                self.position_embedding.weight[self.position_embedding.padding_idx].fill_(0)
 
 
-    def _get_seq_hidden_from_gnn_output(self, gnn_output_on_unique_nodes, alias_inputs_for_sequence):
-        # gnn_output_on_unique_nodes: [batch, max_unique_nodes_in_batch, hidden_size]
-        # alias_inputs_for_sequence: [batch, max_seq_len_in_batch] (indices into unique_nodes)
+    def _get_seq_hidden_with_position(self, gnn_output_on_unique_nodes, alias_inputs_for_sequence, position_ids_for_sequence):
         batch_size = gnn_output_on_unique_nodes.size(0)
-        seq_hidden_list = []
-        for b_idx in range(batch_size):
-            unique_node_embeddings = gnn_output_on_unique_nodes[b_idx] # [max_unique_nodes, hidden_size]
-            alias_indices = alias_inputs_for_sequence[b_idx]          # [max_seq_len]
+        max_seq_len_in_batch = alias_inputs_for_sequence.size(1)
+        
+        # Ensure alias_inputs are long and correctly shaped for gather/indexing
+        alias_indices_expanded = alias_inputs_for_sequence.long().unsqueeze(-1).expand(-1, -1, self.hidden_size)
+        # gnn_output_on_unique_nodes is [batch, max_unique_nodes, hidden_size]
+        # We need to gather along dim 1 (max_unique_nodes)
+        seq_item_hidden = torch.gather(gnn_output_on_unique_nodes, 1, alias_indices_expanded)
+        # Result: [batch, max_seq_len, hidden_size]
+        
+        pos_embeds = self.position_embedding(position_ids_for_sequence.long())
+        
+        if self.position_emb_dim == self.hidden_size:
+            seq_hidden_final = seq_item_hidden + pos_embeds
+        else:
+            # Fallback: if dims don't match for addition, simply use item embeddings
+            # Or implement a projection layer for pos_embeds if this is intended.
+            print(f"Critical Warning: position_emb_dim ({self.position_emb_dim}) != hidden_size ({self.hidden_size}). "
+                  "Positional embeddings not added. Fix dimensions or projection.")
+            seq_hidden_final = seq_item_hidden
             
-            # Gather embeddings based on alias_indices
-            # Ensure alias_indices are within bounds of unique_node_embeddings.size(0)
-            # Valid alias indices should be < unique_node_embeddings.size(0)
-            # Padding in alias_indices (usually 0) should map to padding embedding (usually also at index 0 of unique_node_embeddings if 0 is a unique node)
-            seq_embeds = unique_node_embeddings[alias_indices]
-            seq_hidden_list.append(seq_embeds)
-        
-        return torch.stack(seq_hidden_list) # [batch, max_seq_len, hidden_size]
+        return seq_hidden_final
 
-    # This is the main forward pass for the GNN + Transformer
+
     def forward(self, unique_item_inputs, A_matrix):
-        # unique_item_inputs: [batch, max_unique_nodes_in_batch], contains IDs of unique items in sessions
-        # A_matrix: [batch, max_unique_nodes_in_batch, 2 * max_unique_nodes_in_batch], adjacency matrices
+        hidden = self.embedding(unique_item_inputs)
+        hidden = self.tagnn(A_matrix, hidden)
         
-        hidden = self.embedding(unique_item_inputs) # [batch, max_unique_nodes, hidden_size]
-        hidden = self.tagnn(A_matrix, hidden)       # [batch, max_unique_nodes, hidden_size] (after GNN)
+        transformer_key_padding_mask = (unique_item_inputs == self.embedding.padding_idx)
         
-        # The original code had permute operations for a non-batch_first Transformer.
-        # If using nn.MultiheadAttention with batch_first=True, input should be (N, L, E)
-        # N=batch_size, L=sequence_length (here, max_unique_nodes), E=embedding_dim (hidden_size)
+        x = hidden
+        x_norm = self.layer_norm1(x)
+        x_attn, _ = self.attn(x_norm, x_norm, x_norm, key_padding_mask=transformer_key_padding_mask)
+        hidden = x + x_attn # Post-LN structure
         
-        # Transformer Encoder part expects (L, N, E) if batch_first=False (default)
-        # or (N, L, E) if batch_first=True.
-        # Output of tagnn is (N, L, E) = (batch, max_unique_nodes, hidden_size) which is suitable for batch_first=True.
-
-        # Create attention mask for transformer: True means position is masked.
-        # Mask where unique_item_inputs are padding (e.g. ID 0).
-        # This mask is for the sequence of *unique items*, not the full session sequence.
-        # (N, S) where S is source sequence length.
-        transformer_attn_mask = (unique_item_inputs == self.embedding.padding_idx) # [batch, max_unique_nodes]
-        
-        skip = self.layer_norm1(hidden) # Apply layernorm before residual
-        # For self-attention, query, key, value are the same.
-        # src_key_padding_mask should be FloatTensor with -inf for masked positions and 0.0 for unmasked.
-        # Or BoolTensor where True indicates masking.
-        # MultiheadAttention expects key_padding_mask of shape (N, S)
-        hidden, attn_w = self.attn(hidden, hidden, hidden, key_padding_mask=transformer_attn_mask)
-        hidden = hidden + skip # Residual connection
-        
-        # Output 'hidden' is now the processed embeddings for the unique items in each session
-        # Shape: [batch, max_unique_nodes, hidden_size]
         return hidden
 
-    def compute_scores(self, seq_hidden, mask_for_scoring):
-        # seq_hidden: [batch, max_session_len, hidden_size], full sequential hidden states
-        # mask_for_scoring: [batch, max_session_len], mask for the actual items in session (1 for item, 0 for padding)
-        
-        # Get last hidden state ht based on the mask
-        # Sum mask to get sequence lengths, subtract 1 for 0-based index
+
+    def compute_scores(self, seq_hidden_time_aware, mask_for_scoring):
         actual_lengths = torch.sum(mask_for_scoring, 1).long()
-        # Ensure lengths are at least 1 to avoid negative indices, if a sequence is all padding, ht will be based on index 0.
-        last_item_indices = torch.max(torch.zeros_like(actual_lengths), actual_lengths - 1)
+        # Ensure indices are valid even for all-padding sequences (though mask should prevent this affecting loss)
+        last_item_indices = torch.max(torch.zeros_like(actual_lengths, device=actual_lengths.device), actual_lengths - 1)
         
-        ht = seq_hidden[torch.arange(seq_hidden.shape[0]).long(), last_item_indices]  # [batch_size, hidden_size]
-        
-        q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1])  # [batch_size, 1, hidden_size]
-        q2 = self.linear_two(seq_hidden)  # [batch_size, max_session_len, hidden_size]
-        
-        alpha_unnormalized = self.linear_three(torch.sigmoid(q1 + q2)) # [batch_size, max_session_len, 1]
-        # Apply mask before softmax: set alpha for padded positions to a very small number
-        alpha_unnormalized = alpha_unnormalized.masked_fill(mask_for_scoring.unsqueeze(-1) == 0, -1e9)
-        alpha = F.softmax(alpha_unnormalized, 1)  # [batch_size, max_session_len, 1] (softmax over seq_len dim)
-        
-        # Weighted sum of hidden states
-        # mask.view(...).float() ensures only actual items contribute
-        a = torch.sum(alpha * seq_hidden * mask_for_scoring.unsqueeze(-1).float(), 1) # [batch_size, hidden_size]
+        ht = seq_hidden_time_aware[torch.arange(seq_hidden_time_aware.shape[0]).long(), last_item_indices]
 
-        if not self.nonhybrid: # If hybrid, combine with last item state
+        q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1])
+        q2 = self.linear_two(seq_hidden_time_aware)
+        alpha_unnormalized = self.linear_three(torch.sigmoid(q1 + q2))
+        alpha_unnormalized = alpha_unnormalized.masked_fill(mask_for_scoring.unsqueeze(-1) == 0, -torch.finfo(alpha_unnormalized.dtype).max) # More stable masking
+        alpha = F.softmax(alpha_unnormalized, 1)
+        a = torch.sum(alpha * seq_hidden_time_aware * mask_for_scoring.unsqueeze(-1).float(), 1)
+
+        if not self.nonhybrid:
             a = self.linear_transform(torch.cat([a, ht], 1))
-            
-        b = self.embedding.weight[1:]  # Candidate item embeddings (all items except padding idx 0)
-                                       # Shape: [n_node-1, hidden_size]
 
-        # Scores for all candidate items
-        # Dot product between session embedding 'a' and all item embeddings 'b'
-        # 'a': [batch_size, hidden_size]
-        # 'b': [n_node-1, hidden_size]
-        # Result: [batch_size, n_node-1]
-        # This part was more complex in original, involving target attention. Let's simplify first.
-        # Original target attention:
-        # hidden_masked = seq_hidden * mask_for_scoring.view(mask_for_scoring.shape[0], -1, 1).float()
-        # qt = self.linear_t(hidden_masked)  # [batch_size, max_session_len, hidden_size]
-        # beta = F.softmax(b @ qt.transpose(1, 2), -1) # [batch_size, n_node-1, max_session_len]
-        # target_aware_session_emb = beta @ hidden_masked # [batch_size, n_node-1, hidden_size]
-        # a_expanded = a.view(a.shape[0], 1, a.shape[1])  # [batch_size, 1, hidden_size]
-        # combined_emb_for_scoring = a_expanded + target_aware_session_emb # [batch_size, n_node-1, hidden_size]
-        # scores = torch.sum(combined_emb_for_scoring * b.unsqueeze(0), -1) # [batch_size, n_node-1]
-        # Simpler scoring:
-        scores = torch.matmul(a, b.transpose(0, 1)) # [batch_size, n_node-1]
-
+        # Assuming item ID 0 is padding and not a valid target item
+        candidate_item_embeddings = self.embedding.weight[1:]
+        scores = torch.matmul(a, candidate_item_embeddings.transpose(0, 1))
         return scores
 
-    def get_session_embedding_for_ssl(self, seq_hidden, mask_for_ssl):
-        # seq_hidden: [batch, max_session_len, hidden_size] (for an augmented view)
-        # mask_for_ssl: [batch, max_session_len] (mask for this view)
-        # For SSL, use the representation of the last valid item in the sequence.
+    def get_session_embedding_for_ssl(self, seq_hidden_time_aware, mask_for_ssl):
         actual_lengths = torch.sum(mask_for_ssl, 1).long()
-        last_item_indices = torch.max(torch.zeros_like(actual_lengths), actual_lengths - 1)
-        
-        session_repr = seq_hidden[torch.arange(seq_hidden.shape[0]).long(), last_item_indices]
+        last_item_indices = torch.max(torch.zeros_like(actual_lengths, device=actual_lengths.device), actual_lengths - 1)
+        session_repr = seq_hidden_time_aware[torch.arange(seq_hidden_time_aware.shape[0]).long(), last_item_indices]
         return session_repr
 
-    def calculate_infonce_loss(self, z1, z2): 
-        # z1, z2: [batch_size, projection_dim], projected embeddings of two views
+    def calculate_infonce_loss(self, z1, z2):
         z1 = F.normalize(z1, dim=-1)
         z2 = F.normalize(z2, dim=-1)
-        
-        # Cosine similarity matrix
-        #sim_matrix = torch.matmul(z1, z2.T) / self.ssl_temperature # [batch_size, batch_size]
-        # یک طرف را detach می‌کنیم تا از collapse projection جلوگیری کنیم
-        sim_matrix = torch.matmul(z1, z2.detach().T) / self.ssl_temperature
-
-
-        # Positive pairs are on the diagonal (i-th session in view1 corresponds to i-th session in view2)
+        sim_matrix = torch.matmul(z1, z2.T) / self.ssl_temperature
         labels = torch.arange(z1.size(0)).long().to(z1.device)
-        
         loss_ssl = F.cross_entropy(sim_matrix, labels)
         return loss_ssl
 
 
-def get_mask(seq_len): # This seems to be for a causal mask in Transformer if not using key_padding_mask
-    # For self-attention over unique items, key_padding_mask is more direct.
-    # If this is for the Attention_GNN's GNNCell, it's not used there.
-    # If for the MultiheadAttention, it might be an alternative, but key_padding_mask is standard.
-    # Let's assume it's not critical for now given the current structure.
-    return torch.from_numpy(np.triu(np.ones((seq_len, seq_len)), k=1).astype('bool'))#.to('cuda') # Device handled by caller
-
-
-def to_cuda(input_variable):
-    if torch.cuda.is_available():
-        return input_variable.cuda()
-    else:
-        return input_variable
-
-
-def to_cpu(input_variable):
-    if torch.cuda.is_available():
-        return input_variable.cpu()
-    else:
-        return input_variable
-
-
-# Standalone forward function for evaluation (modified)
-def forward_eval(model, i_indices_batch, data_loader, opt):
-    # For eval, SSL augmentation is turned off (drop_prob=0)
-    # data_v1 will be the original sequence data.
-    # targets_main and mask_main will be for the original sequence.
-    data_v1, _, targets_main, mask_main = data_loader.get_slice(i_indices_batch, ssl_item_drop_prob=0.0)
+def train_test(model, train_data, test_data, opt, device):
+    # Access attributes from the original model if wrapped by DataParallel
+    model_module = model.module if isinstance(model, torch.nn.DataParallel) else model
     
-    alias_inputs_eval, A_eval, items_eval_unique_nodes, _ = data_v1 # mask_v1_ssl not used for scoring
+    if opt.epoch > 0 and model_module.scheduler.last_epoch < opt.epoch :
+        model_module.scheduler.step()
 
-    items_eval_unique_nodes = to_cuda(torch.Tensor(items_eval_unique_nodes).long())
-    A_eval = to_cuda(torch.Tensor(A_eval).float())
-    alias_inputs_eval = to_cuda(torch.Tensor(alias_inputs_eval).long())
-    mask_main_cuda = to_cuda(torch.Tensor(mask_main).long()) # Original mask for scoring
-    targets_main_cuda = to_cuda(torch.Tensor(targets_main).long())
-
-    # 1. Pass unique items and their graph through GNN+Transformer part of the model
-    gnn_output_on_unique_nodes = model(items_eval_unique_nodes, A_eval) 
-    # Output: [batch, max_unique_nodes_in_batch, hidden_size]
-
-    # 2. Reconstruct full sequential hidden states using alias_inputs
-    seq_hidden_eval = model._get_seq_hidden_from_gnn_output(gnn_output_on_unique_nodes, alias_inputs_eval)
-    # Output: [batch, max_session_len, hidden_size]
-           
-    # 3. Compute recommendation scores
-    scores = model.compute_scores(seq_hidden_eval, mask_main_cuda)
-    
-    return targets_main_cuda, scores
-
-
-def train_test(model, train_data, test_data, opt): # Added opt
-    if opt.epoch > 0 : # Only step scheduler if actually training
-        model.scheduler.step() # Step LR scheduler each epoch
-        
     print('Start training: ', datetime.datetime.now())
     model.train()
+
     total_loss_epoch = 0.0
     total_main_loss_epoch = 0.0
     total_ssl_loss_epoch = 0.0
-    
-    # Fetch batch_size from opt, as model.batch_size might not be updated for last batch
-    current_batch_size = opt.batchSize 
+
+    current_batch_size = opt.batchSize
     slices = train_data.generate_batch(current_batch_size)
+    if not slices:
+        print("Warning: No batches generated from training data. Skipping training epoch.")
+        return 0.0, 0.0 # Return zero metrics if no training happened
 
     for i_slice_indices, j_batch_num in tqdm(zip(slices, np.arange(len(slices))), total=len(slices)):
-        model.optimizer.zero_grad()
+        if len(i_slice_indices) == 0: continue # Skip if a slice is empty
+
+        model_module.optimizer.zero_grad()
+
+        ssl_drop_prob = opt.ssl_item_drop_prob
+        data_v1, data_v2, targets_main_np, mask_main_np = train_data.get_slice(i_slice_indices, ssl_item_drop_prob=ssl_drop_prob)
+
+        # Skip batch if data is empty (can happen if get_slice returns empty arrays for an empty slice)
+        if data_v1[0].size == 0 or data_v2[0].size == 0:
+            print(f"Skipping empty batch {j_batch_num}")
+            continue
+
+        alias_inputs_v1, A_v1, items_v1_unique, mask_v1_ssl, position_ids_v1 = data_v1
+        alias_inputs_v2, A_v2, items_v2_unique, mask_v2_ssl, position_ids_v2 = data_v2
+
+        items_v1_unique = torch.from_numpy(items_v1_unique).long().to(device)
+        A_v1 = torch.from_numpy(A_v1).float().to(device)
+        alias_inputs_v1 = torch.from_numpy(alias_inputs_v1).long().to(device)
+        mask_v1_ssl = torch.from_numpy(mask_v1_ssl).long().to(device)
+        position_ids_v1 = torch.from_numpy(position_ids_v1).long().to(device)
+
+        items_v2_unique = torch.from_numpy(items_v2_unique).long().to(device)
+        A_v2 = torch.from_numpy(A_v2).float().to(device)
+        alias_inputs_v2 = torch.from_numpy(alias_inputs_v2).long().to(device)
+        mask_v2_ssl = torch.from_numpy(mask_v2_ssl).long().to(device)
+        position_ids_v2 = torch.from_numpy(position_ids_v2).long().to(device)
+
+        targets_main = torch.from_numpy(targets_main_np).long().to(device)
+        mask_main = torch.from_numpy(mask_main_np).long().to(device)
+
+        gnn_output_v1 = model(items_v1_unique, A_v1)
+        seq_hidden_v1_time_aware = model_module._get_seq_hidden_with_position(gnn_output_v1, alias_inputs_v1, position_ids_v1)
+        scores_main = model_module.compute_scores(seq_hidden_v1_time_aware, mask_main)
+        loss_main = model_module.loss_function(scores_main, targets_main - 1)
+
+        session_emb_v1_ssl = model_module.get_session_embedding_for_ssl(seq_hidden_v1_time_aware, mask_v1_ssl)
         
-        # Get data for two views + original targets and mask for main task
-        ssl_drop_prob = opt.ssl_item_drop_prob if hasattr(opt, 'ssl_item_drop_prob') else 0.2
-        data_v1, data_v2, targets_main, mask_main = train_data.get_slice(i_slice_indices, ssl_item_drop_prob=ssl_drop_prob)
-
-        alias_inputs_v1, A_v1, items_v1_unique, mask_v1_ssl = data_v1
-        alias_inputs_v2, A_v2, items_v2_unique, mask_v2_ssl = data_v2
-
-        # Move data to CUDA
-        items_v1_unique = to_cuda(torch.Tensor(items_v1_unique).long())
-        A_v1 = to_cuda(torch.Tensor(A_v1).float())
-        alias_inputs_v1 = to_cuda(torch.Tensor(alias_inputs_v1).long())
-        mask_v1_ssl = to_cuda(torch.Tensor(mask_v1_ssl).long())
-
-        items_v2_unique = to_cuda(torch.Tensor(items_v2_unique).long())
-        A_v2 = to_cuda(torch.Tensor(A_v2).float())
-        alias_inputs_v2 = to_cuda(torch.Tensor(alias_inputs_v2).long())
-        mask_v2_ssl = to_cuda(torch.Tensor(mask_v2_ssl).long())
-        
-        targets_main = to_cuda(torch.Tensor(targets_main).long())
-        mask_main = to_cuda(torch.Tensor(mask_main).long()) # Original mask for main task scoring
-
-        # --- Main Task (using view 1, which is original or very mildly augmented) ---
-        # 1. GNN+Transformer forward pass for unique items of view 1
-        gnn_output_v1 = model(items_v1_unique, A_v1) # [batch, max_unique_v1, hidden_size]
-        # 2. Reconstruct full sequence hidden states for view 1
-        seq_hidden_v1 = model._get_seq_hidden_from_gnn_output(gnn_output_v1, alias_inputs_v1) # [batch, max_seq_len, hidden_size]
-        # 3. Compute recommendation scores using original mask
-        scores_main = model.compute_scores(seq_hidden_v1, mask_main) 
-        loss_main = model.loss_function(scores_main, targets_main - 1) # Ensure targets are 0-indexed if necessary for loss
-
-        # --- SSL Task (Contrasting v1 and v2) ---
-        # `seq_hidden_v1` is already computed.
-        # For SSL, we need a session-level embedding from `seq_hidden_v1` using `mask_v1_ssl`.
-        session_emb_v1_ssl = model.get_session_embedding_for_ssl(seq_hidden_v1, mask_v1_ssl)
-        
-        # Compute for view 2
         gnn_output_v2 = model(items_v2_unique, A_v2)
-        seq_hidden_v2 = model._get_seq_hidden_from_gnn_output(gnn_output_v2, alias_inputs_v2)
-        session_emb_v2_ssl = model.get_session_embedding_for_ssl(seq_hidden_v2, mask_v2_ssl)
+        seq_hidden_v2_time_aware = model_module._get_seq_hidden_with_position(gnn_output_v2, alias_inputs_v2, position_ids_v2)
+        session_emb_v2_ssl = model_module.get_session_embedding_for_ssl(seq_hidden_v2_time_aware, mask_v2_ssl)
 
-        # Project session embeddings for SSL
-        projected_emb_v1 = model.projection_head_ssl(session_emb_v1_ssl)
-        projected_emb_v2 = model.projection_head_ssl(session_emb_v2_ssl)
-           
-        loss_ssl = model.calculate_infonce_loss(projected_emb_v1, projected_emb_v2)
-           
-        # Total loss
-        #combined_loss = loss_main + model.ssl_weight * loss_ssl
-        # warm-up: در ۲ epoch اول ssl_weight = 0.0
-        current_ssl_weight = 0.0 if opt.epoch <= 2 else model.ssl_weight
-        combined_loss = loss_main + current_ssl_weight * loss_ssl  
+        projected_emb_v1 = model_module.projection_head_ssl(session_emb_v1_ssl)
+        projected_emb_v2 = model_module.projection_head_ssl(session_emb_v2_ssl)
+        loss_ssl = model_module.calculate_infonce_loss(projected_emb_v1, projected_emb_v2)
 
+        combined_loss = loss_main + model_module.ssl_weight * loss_ssl
         combined_loss.backward()
-        model.optimizer.step()
-           
-        total_loss_epoch += combined_loss.item()
-        total_main_loss_epoch += loss_main.item()
-        total_ssl_loss_epoch += loss_ssl.item()
+        model_module.optimizer.step()
 
-        if j_batch_num % int(len(slices) / 5 + 1) == 0 and len(slices) > 0:
-             print('[%d/%d] Total Loss: %.4f (Main: %.4f, SSL: %.4f)' % 
-                   (j_batch_num, len(slices), combined_loss.item(), loss_main.item(), loss_ssl.item()))
+        total_loss_epoch += combined_loss.item(); total_main_loss_epoch += loss_main.item(); total_ssl_loss_epoch += loss_ssl.item()
+
+        if j_batch_num > 0 and len(slices) > 5 and j_batch_num % int(len(slices) / 5) == 0 : # Print more frequently
+            print('[%d/%d] Total Loss: %.4f (Main: %.4f, SSL: %.4f)' %
+                  (j_batch_num, len(slices), combined_loss.item(), loss_main.item(), loss_ssl.item()))
     
-    if len(slices) > 0:
+    if len(slices) > 0 and total_loss_epoch > 0: # Check if any training happened
         avg_total_loss = total_loss_epoch / len(slices)
         avg_main_loss = total_main_loss_epoch / len(slices)
         avg_ssl_loss = total_ssl_loss_epoch / len(slices)
         print('\tTraining Epoch Loss (Avg): Total: %.3f (Main: %.3f, SSL: %.3f)' % (avg_total_loss, avg_main_loss, avg_ssl_loss))
     else:
-        print('\tNo training batches were processed.')
+        print('\tNo training batches were effectively processed or loss was zero.')
 
-
-    # Evaluation
     print('Start Prediction: ', datetime.datetime.now())
     model.eval()
     hit, mrr = [], []
-    # Use opt.batchSize for test data loader as well
     slices_test = test_data.generate_batch(opt.batchSize)
+    if not slices_test:
+        print("Warning: No batches generated from test data. Skipping evaluation.")
+        return 0.0, 0.0
 
-    with torch.no_grad(): # Ensure no gradients are computed during evaluation
+    with torch.no_grad():
         for i_test_slice_indices in slices_test:
-            # The forward_eval function handles getting data with ssl_item_drop_prob=0.0
-            targets_eval, scores_eval = forward_eval(model, i_test_slice_indices, test_data, opt)
-            
-            sub_scores_top20_indices = scores_eval.topk(20)[1] # Get indices of top 20 items
-            sub_scores_top20_indices = to_cpu(sub_scores_top20_indices).detach().numpy()
-            
-            targets_eval_np = to_cpu(targets_eval).detach().numpy()
-            
-            # Get the original mask for the test batch to know valid lengths, if needed by metric calc,
-            # but typically hit/mrr are calculated per session.
-            # The `test_data.mask` might not be aligned if generate_batch shuffles.
-            # It's safer if `get_slice` also returns the original mask for test data for this purpose if needed.
-            # However, the current loop iterates over `targets_eval_np` which is already per session.
-            # The `mask` in `zip` in original code for test was `test_data.mask` - this assumes test_data isn't shuffled
-            # or that `mask` is fetched in sync. The current loop structure is fine.
+            if len(i_test_slice_indices) == 0: continue
 
-            for score_row, target_item in zip(sub_scores_top20_indices, targets_eval_np):
-                # score_row are predicted item indices (0 to N-2, as target is target-1)
-                # target_item is original ID, so target_item-1 is the 0-indexed version
-                target_for_eval = target_item - 1 
+            data_v1_test, _, targets_test_orig_np, mask_test_orig_np = test_data.get_slice(i_test_slice_indices, ssl_item_drop_prob=0.0)
+            
+            if data_v1_test[0].size == 0: # Skip if slice resulted in empty data
+                print(f"Skipping empty test batch.")
+                continue
+
+            alias_inputs_eval, A_eval, items_eval_unique, _, position_ids_eval = data_v1_test
+
+            items_eval_unique = torch.from_numpy(items_eval_unique).long().to(device)
+            A_eval = torch.from_numpy(A_eval).float().to(device)
+            alias_inputs_eval = torch.from_numpy(alias_inputs_eval).long().to(device)
+            position_ids_eval = torch.from_numpy(position_ids_eval).long().to(device)
+            mask_test_orig_cuda = torch.from_numpy(mask_test_orig_np).long().to(device)
+            targets_test_orig_cuda = torch.from_numpy(targets_test_orig_np).long().to(device)
+
+            gnn_output_eval = model(items_eval_unique, A_eval)
+            seq_hidden_eval_time_aware = model_module._get_seq_hidden_with_position(gnn_output_eval, alias_inputs_eval, position_ids_eval)
+            scores_eval = model_module.compute_scores(seq_hidden_eval_time_aware, mask_test_orig_cuda)
+
+            sub_scores_top20_indices = scores_eval.topk(20)[1]
+            sub_scores_top20_indices_np = sub_scores_top20_indices.cpu().detach().numpy()
+            targets_eval_np = targets_test_orig_cuda.cpu().detach().numpy()
+
+            for score_row, target_item in zip(sub_scores_top20_indices_np, targets_eval_np):
+                target_for_eval = target_item - 1
                 hit.append(np.isin(target_for_eval, score_row))
                 if target_for_eval in score_row:
                     mrr.append(1 / (np.where(score_row == target_for_eval)[0][0] + 1))
                 else:
                     mrr.append(0)
 
-    hit_metric = np.mean(hit) * 100 if hit else 0
-    mrr_metric = np.mean(mrr) * 100 if mrr else 0
+    hit_metric = np.mean(hit) * 100 if hit else 0.0
+    mrr_metric = np.mean(mrr) * 100 if mrr else 0.0
     return hit_metric, mrr_metric
-
-
-def get_pos(seq_len): # Seems unused currently
-    return torch.arange(seq_len).unsqueeze(0)
