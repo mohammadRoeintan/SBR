@@ -25,7 +25,7 @@ def data_masks(all_usr_pois, item_tail, max_len):
     len_max = min(max(us_lens), max_len) if max_len > 0 else max(us_lens)
     us_pois = [upois[:len_max] + item_tail * (len_max - min(len(upois), len_max)) for upois in all_usr_pois]
     us_msks = [[1] * min(le, len_max) + [0] * (len_max - min(le, len_max)) for le in us_lens]
-    us_pos = [list(range(1, min(le, len_max)+1) + [0] * (len_max - min(le, len_max)) for le in us_lens]
+    us_pos = [list(range(1, min(le, len_max)+1) + [0] * (len_max - min(le, len_max))) for le in us_lens]
     return us_pois, us_msks, us_pos, len_max
 
 class Dataset():
