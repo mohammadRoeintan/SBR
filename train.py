@@ -6,7 +6,7 @@ import os
 
 import torch
 from proc_utils import Dataset, split_validation
-from model import Attention_SessionGraph, train_test # Only import what's needed directly
+from model import Attention_SessionGraph, train_test
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -31,9 +31,9 @@ class Diginetica_arg():
     ssl_temperature = 0.12
     ssl_item_drop_prob = 0.35
     ssl_projection_dim = 75
-    n_gpu = 0 # Default: 0, meaning auto-detect or CPU
-    max_len = 50 # Max session length for position embedding, adjust based on dataset
-    position_emb_dim = 150 # Default: hiddenSize
+    n_gpu = 0
+    max_len = 50
+    position_emb_dim = 150
 
 class Yoochoose_arg():
     dataset = 'yoochoose1_64'
@@ -53,57 +53,54 @@ class Yoochoose_arg():
     ssl_temperature = 0.12
     ssl_item_drop_prob = 0.35
     ssl_projection_dim = 75
-    n_gpu = 0 # Default: 0, meaning auto-detect or CPU
-    max_len = 50 # Max session length, adjust based on dataset
-    position_emb_dim = 150 # Default: hiddenSize
+    n_gpu = 0
+    max_len = 50
+    position_emb_dim = 150
 
 
 def main(opt):
     model_save_dir = 'saved_ssl_time/'
-    log_dir = 'logs_ssl_time/' # Ensure this is different or specific
+    log_dir = 'logs_ssl_time/'
 
-    for_makedirs = [model_save_dir, log_dir]
-    for directory in for_makedirs:
+    for directory in [model_save_dir, log_dir]:
         if not os.path.exists(directory):
             os.makedirs(directory)
             print(f"Directory {directory} created.")
 
     writer = SummaryWriter(log_dir=log_dir)
 
-    if torch.cuda.is_available():
-        n_gpu_available = torch.cuda.device_count()
-        print(f"Number of GPUs available: {n_gpu_available}")
-        if opt.n_gpu == 0 and n_gpu_available >= 1:
-            print(f"Auto-detected {n_gpu_available} GPUs. Using all available.")
-            opt.n_gpu = n_gpu_available
-        elif opt.n_gpu > n_gpu_available:
-            print(f"Warning: Requested {opt.n_gpu} GPUs, but only {n_gpu_available} are available. Using {n_gpu_available}.")
-            opt.n_gpu = n_gpu_available
-        device = torch.device("cuda:0" if opt.n_gpu > 0 else "cpu")
-        print(f"Using {opt.n_gpu if opt.n_gpu > 0 else 'CPU'}{' GPU(s)' if opt.n_gpu > 0 else ''}. Main device: {device}")
+    device = torch.device("cuda" if torch.cuda.is_available() and opt.n_gpu > 0 else "cpu")
+    if torch.cuda.is_available() and opt.n_gpu > 0:
+        print(f"Using {opt.n_gpu} GPU(s)")
     else:
-        device = torch.device("cpu"); opt.n_gpu = 0
-        print("CUDA not available. Using CPU.")
+        print("Using CPU")
 
     if opt.dataset == 'diginetica':
-        train_data_path = 'datasets/cikm16/raw/train.txt'; test_data_path = 'datasets/cikm16/raw/test.txt'
+        train_data_path = 'datasets/cikm16/raw/train.txt'
+        test_data_path = 'datasets/cikm16/raw/test.txt'
     elif opt.dataset == 'yoochoose1_64':
-        train_data_path = 'datasets/yoochoose1_64/raw/train.txt'; test_data_path = 'datasets/yoochoose1_64/raw/test.txt'
-    else: print(f"Error: Unknown dataset {opt.dataset}"); sys.exit(1)
+        train_data_path = 'datasets/yoochoose1_64/raw/train.txt'
+        test_data_path = 'datasets/yoochoose1_64/raw/test.txt'
+    else: 
+        print(f"Error: Unknown dataset {opt.dataset}")
+        sys.exit(1)
+        
     try:
-        train_data_raw = pickle.load(open(train_data_path, 'rb'))
-        test_data_raw = pickle.load(open(test_data_path, 'rb'))
-    except FileNotFoundError: print(f"Error: Dataset file not found at {train_data_path} or {test_data_path}"); sys.exit(1)
+        with open(train_data_path, 'rb') as f:
+            train_data_raw = pickle.load(f)
+        with open(test_data_path, 'rb') as f:
+            test_data_raw = pickle.load(f)
+    except FileNotFoundError: 
+        print(f"Error: Dataset file not found at {train_data_path} or {test_data_path}")
+        sys.exit(1)
 
     if opt.validation:
         train_data_raw, valid_data_raw = split_validation(train_data_raw, opt.valid_portion)
         test_data_raw = valid_data_raw
-        if not valid_data_raw[0]: print("Warning: Validation set is empty after split.")
-        print(f'Using validation set ({len(valid_data_raw[0]) if valid_data_raw[0] else 0} sessions) for testing.')
+        print(f'Using validation set ({len(valid_data_raw[0])} sessions) for testing.')
     else:
-        if not test_data_raw[0]: print("Warning: Test set is empty.")
-        print(f'Using full test set ({len(test_data_raw[0]) if test_data_raw[0] else 0} sessions).')
-    if not train_data_raw[0]: print("FATAL: Training set is empty."); sys.exit(1)
+        print(f'Using full test set ({len(test_data_raw[0])} sessions).')
+        
     print(f'Training set size: {len(train_data_raw[0])} sessions.')
 
     train_data_loader = Dataset(train_data_raw, shuffle=True, opt=opt)
@@ -115,35 +112,39 @@ def main(opt):
         opt.max_len = actual_dataset_max_len
     
     if opt.position_emb_dim == 0 : 
-        # print(f"Adjusting opt.position_emb_dim from {opt.position_emb_dim} to opt.hiddenSize ({opt.hiddenSize}).")
         opt.position_emb_dim = opt.hiddenSize
         
     if opt.ssl_projection_dim == 0:
         opt.ssl_projection_dim = opt.hiddenSize // 2
-        # print(f"Setting opt.ssl_projection_dim to hiddenSize // 2 = {opt.ssl_projection_dim}")
 
-
-    if opt.dataset == 'diginetica': n_node = 43098
-    elif opt.dataset == 'yoochoose1_64': n_node = 37484
-    else: n_node = 310; print(f"Warning: n_node using fallback {n_node}")
+    if opt.dataset == 'diginetica': 
+        n_node = 43098
+    elif opt.dataset == 'yoochoose1_64': 
+        n_node = 37484
+    else: 
+        n_node = 310
 
     model_instance = Attention_SessionGraph(opt, n_node)
 
     if opt.n_gpu > 1 and torch.cuda.is_available():
-        print(f"Wrapping model with torch.nn.DataParallel for {opt.n_gpu} GPUs.")
-        model = torch.nn.DataParallel(model_instance, device_ids=list(range(opt.n_gpu)))
-        model.to(device)
-    else: model = model_instance.to(device)
+        print(f"Using {opt.n_gpu} GPUs with DataParallel")
+        model = torch.nn.DataParallel(model_instance)
+    else:
+        model = model_instance
+        
+    model = model.to(device)
 
-    print(f"Model initialized. n_node={n_node}, max_session_len_for_pos_emb={opt.max_len}, pos_emb_dim={opt.position_emb_dim}")
-    print(f"Final Hyperparameters for model: {vars(opt)}")
+    print(f"Model initialized. n_node={n_node}, max_session_len={opt.max_len}, pos_emb_dim={opt.position_emb_dim}")
+    print(f"Hyperparameters: {vars(opt)}")
 
     start_time = time.time()
-    best_result = [0.0, 0.0]; best_epoch = [0, 0]; bad_counter = 0
+    best_result = [0.0, 0.0]
+    best_epoch = [0, 0]
+    bad_counter = 0
 
     for epoch_num in range(opt.epoch):
         print('-' * 50 + f'\nEpoch: {epoch_num}')
-        opt.current_epoch_num = epoch_num # Set current_epoch_num on opt HERE
+        opt.current_epoch_num = epoch_num
         current_hit, current_mrr = train_test(model, train_data_loader, test_data_loader, opt, device)
         print(f'Epoch {epoch_num} Eval - Recall@20: {current_hit:.4f}, MRR@20: {current_mrr:.4f}')
         writer.add_scalar('epoch/recall_at_20', current_hit, epoch_num)
@@ -152,31 +153,30 @@ def main(opt):
         flag = 0
         saved_this_epoch_path = ""
 
-        if current_hit > best_result[0] - 1e-5 :
-            if abs(current_hit - best_result[0]) > 1e-5 or current_mrr > best_result[1] :
-                best_result[0] = current_hit; best_epoch[0] = epoch_num; flag = 1
-                saved_this_epoch_path = model_save_dir + f'epoch_{epoch_num}_recall_{current_hit:.4f}_mrr_{current_mrr:.4f}.pt'
-                state_to_save = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
-                torch.save(state_to_save, saved_this_epoch_path)
-                print(f"Saved best model (by Recall) to {saved_this_epoch_path}")
+        if current_hit >= best_result[0]:
+            best_result[0] = current_hit
+            best_epoch[0] = epoch_num
+            flag = 1
+            saved_this_epoch_path = os.path.join(model_save_dir, f'epoch_{epoch_num}_recall_{current_hit:.4f}_mrr_{current_mrr:.4f}.pt')
+            state_to_save = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
+            torch.save(state_to_save, saved_this_epoch_path)
+            print(f"Saved best model (by Recall) to {saved_this_epoch_path}")
 
-        if current_mrr > best_result[1] - 1e-5 :
-             if abs(current_mrr - best_result[1]) > 1e-5 or current_hit > best_result[0] :
-                best_result[1] = current_mrr; best_epoch[1] = epoch_num; flag = 1
-                mrr_save_path = model_save_dir + f'epoch_{epoch_num}_recall_{current_hit:.4f}_mrr_{current_mrr:.4f}.pt'
-                if mrr_save_path != saved_this_epoch_path:
-                    state_to_save = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
-                    torch.save(state_to_save, mrr_save_path)
-                    print(f"Saved best model (by MRR) to {mrr_save_path}")
-                elif not saved_this_epoch_path: # If not saved for recall but is best for MRR
-                    state_to_save = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
-                    torch.save(state_to_save, mrr_save_path)
-                    print(f"Saved best model (by MRR) to {mrr_save_path}")
+        if current_mrr >= best_result[1]:
+            best_result[1] = current_mrr
+            best_epoch[1] = epoch_num
+            flag = 1
+            mrr_save_path = os.path.join(model_save_dir, f'epoch_{epoch_num}_recall_{current_hit:.4f}_mrr_{current_mrr:.4f}.pt')
+            if mrr_save_path != saved_this_epoch_path:
+                state_to_save = model.module.state_dict() if isinstance(model, torch.nn.DataParallel) else model.state_dict()
+                torch.save(state_to_save, mrr_save_path)
+                print(f"Saved best model (by MRR) to {mrr_save_path}")
 
         print(f'Current Best: Recall@20: {best_result[0]:.4f} (Epoch {best_epoch[0]}), MRR@20: {best_result[1]:.4f} (Epoch {best_epoch[1]})')
-        bad_counter += (1 if flag == 0 else 0)
+        bad_counter = 0 if flag else bad_counter + 1
         if bad_counter >= opt.patience:
-            print(f"Early stopping after {opt.patience} epochs without improvement."); break
+            print(f"Early stopping after {opt.patience} epochs without improvement.")
+            break
             
     writer.close()
     print('-' * 50 + f"\nTotal Running time: {(time.time() - start_time):.2f} seconds")
@@ -216,47 +216,38 @@ if __name__ == '__main__':
 
     cmd_args = parser.parse_args()
     
-    opt = argparse.Namespace() # Initialize an empty Namespace
+    opt = argparse.Namespace()
 
     if cmd_args.defaults:
-        # print("INFO: Using dataset default configurations as a base.")
         if cmd_args.dataset == 'diginetica':
             base_config = Diginetica_arg()
         elif cmd_args.dataset == 'yoochoose1_64':
             base_config = Yoochoose_arg()
         else:
-            print(f"FATAL: Unknown dataset '{cmd_args.dataset}' for default configurations."); sys.exit(1)
+            print(f"FATAL: Unknown dataset '{cmd_args.dataset}'")
+            sys.exit(1)
         
         for key, value in vars(base_config).items():
             setattr(opt, key, value)
         
         for key, cmd_value in vars(cmd_args).items():
             if cmd_value != parser.get_default(key):
-                # print(f"Overriding '{key}': from base_config '{getattr(opt, key, 'N/A')}' to CMD '{cmd_value}'")
                 setattr(opt, key, cmd_value)
             elif not hasattr(opt, key):
                  setattr(opt, key, cmd_value)
     else:
-        # print("INFO: NOT using dataset default configurations. Using command-line arguments directly.")
         opt = cmd_args
 
-    if not hasattr(opt, 'ssl_projection_dim') or opt.ssl_projection_dim == 0 : # Check if exists first
-        if not hasattr(opt, 'hiddenSize'): # Ensure hiddenSize exists before calculating
-             print("FATAL: hiddenSize not found in opt for calculating ssl_projection_dim. Check argument parsing.")
-             # Fallback or error, for safety, assign a default if hiddenSize is missing
-             # This situation should be rare if parsing is correct.
-             # Example: opt.hiddenSize = 100 # A default fallback
-             # For now, assume hiddenSize will be there.
+    if not hasattr(opt, 'ssl_projection_dim') or opt.ssl_projection_dim == 0:
         opt.ssl_projection_dim = opt.hiddenSize // 2
 
-    if not hasattr(opt, 'position_emb_dim') or opt.position_emb_dim == 0 :
-        if not hasattr(opt, 'hiddenSize'):
-             print("FATAL: hiddenSize not found in opt for calculating position_emb_dim.")
+    if not hasattr(opt, 'position_emb_dim') or opt.position_emb_dim == 0:
         opt.position_emb_dim = opt.hiddenSize
         
-    if not hasattr(opt, 'n_gpu'): # Ensure n_gpu is always present
+    if not hasattr(opt, 'n_gpu'):
         opt.n_gpu = 0
-    if not hasattr(opt, 'max_len'): # Ensure max_len is always present
-        opt.max_len = 50 # Default fallback, will be updated in main
+        
+    if not hasattr(opt, 'max_len'):
+        opt.max_len = 50
 
     main(opt)
