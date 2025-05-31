@@ -1,461 +1,242 @@
-############################################################
-# This code builds on https://github.com/CRIPAC-DIG/TAGNN #
-# and integrates STAR: https://github.com/yeganegi-reza/STAR #
-############################################################
-
-from tqdm import tqdm
-import datetime
-import math
 import numpy as np
-
 import torch
-from torch import nn
-from torch.nn import Module, Parameter
-import torch.nn.functional as F
+import random
+import bisect
+import numpy as np
+import torch
+import random
+from collections import defaultdict
 
-class TimeAwareStarGNN(nn.Module):
-    def __init__(self, hidden_size, num_heads=8):
-        super().__init__()
-        # نگاشت تفاوت زمانی (اسکالر) به فضای پنهان
-        self.time_embed = nn.Linear(1, hidden_size)
-        
-        # پارامتر گره ستاره مرکزی
-        self.star_center = nn.Parameter(torch.Tensor(hidden_size))
-        stdv = 1.0 / math.sqrt(hidden_size)
-        self.star_center.data.uniform_(-stdv, stdv)
-        
-        self.attn = nn.MultiheadAttention(
-            hidden_size, num_heads, batch_first=True
-        )
-        self.norm = nn.LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(0.3)
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size * 4),
-            nn.ReLU(),
-            nn.Linear(hidden_size * 4, hidden_size)
-        )
-
-    def forward(self, hidden, time_diffs):
-        # جاسازی زمانی: تبدیل شکل time_diffs به (batch_size, seq_len, 1)
-        time_emb = self.time_embed(time_diffs.unsqueeze(-1).float())
-        hidden = hidden + time_emb
-        
-        # ادغام توپولوژی ستاره
-        batch_size, seq_len, _ = hidden.size()
-        star_nodes = self.star_center.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1)
-        augmented_hidden = torch.cat([star_nodes, hidden], dim=1)
-        
-        # مکانیزم توجه ستاره
-        attn_output, _ = self.attn(
-            augmented_hidden, augmented_hidden, augmented_hidden
-        )
-        attn_output = self.dropout(attn_output)
-        star_context = attn_output[:, 0]  # استخراج نمایندگی گره ستاره
-        
-        # اتصال باقیمانده و FFN
-        output = augmented_hidden + attn_output
-        output = self.norm(output)
-        
-        # شبکه فیدفوروارد
-        output = self.ffn(output) + output
-        output = self.norm(output)
-        
-        return output[:, 1:], star_context
-
-class Attention_GNN(Module):
-    def __init__(self, hidden_size, step=2):
-        super(Attention_GNN, self).__init__()
-        self.step = step
-        self.hidden_size = hidden_size
-        self.input_size = hidden_size * 2
-        self.gate_size = 3 * hidden_size
-        self.w_ih = Parameter(torch.Tensor(self.gate_size, self.input_size))
-        self.w_hh = Parameter(torch.Tensor(self.gate_size, self.hidden_size))
-        self.b_ih = Parameter(torch.Tensor(self.gate_size))
-        self.b_hh = Parameter(torch.Tensor(self.gate_size))
-        self.b_iah = Parameter(torch.Tensor(self.hidden_size))
-        self.b_oah = Parameter(torch.Tensor(self.hidden_size))
-
-        self.linear_edge_in = nn.Linear(
-            self.hidden_size, self.hidden_size, bias=True)
-        self.linear_edge_out = nn.Linear(
-            self.hidden_size, self.hidden_size, bias=True)
-        
-        # Dropout
-        self.dropout = nn.Dropout(0.3)
-        
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        stdv = 1.0 / math.sqrt(self.hidden_size)
-        for weight in self.parameters():
-            if weight.dim() > 1: 
-                 weight.data.uniform_(-stdv, stdv)
-            else: 
-                 weight.data.uniform_(-stdv, stdv)
-        for layer in [self.linear_edge_in, self.linear_edge_out]:
-            if hasattr(layer, 'weight') and layer.weight is not None:
-                layer.weight.data.uniform_(-stdv, stdv)
-            if hasattr(layer, 'bias') and layer.bias is not None:
-                layer.bias.data.uniform_(-stdv, stdv)
-
-    def GNNCell(self, A, hidden):
-        batch_size, num_nodes_in_hidden, _ = hidden.shape
-        expected_A_feature_dim = 2 * num_nodes_in_hidden
-
-        # اطمینان از تطابق ابعاد ماتریس مجاورت
-        if A.shape[2] < expected_A_feature_dim:
-            pad_size = expected_A_feature_dim - A.shape[2]
-            pad_tensor = torch.zeros(batch_size, A.shape[1], pad_size, 
-                                    device=A.device, dtype=A.dtype)
-            A_compat = torch.cat([A, pad_tensor], dim=2)
-        elif A.shape[2] > expected_A_feature_dim:
-            A_compat = A[:, :, :expected_A_feature_dim]
-        else:
-            A_compat = A
-
-        input_in_adj = A_compat[:, :, :num_nodes_in_hidden]
-        input_out_adj = A_compat[:, :, num_nodes_in_hidden:2*num_nodes_in_hidden]
-
-        input_in = torch.matmul(input_in_adj, self.linear_edge_in(hidden)) + self.b_iah
-        input_out = torch.matmul(input_out_adj, self.linear_edge_out(hidden)) + self.b_oah
-
-        input_in = self.dropout(input_in)
-        input_out = self.dropout(input_out)
-
-        inputs = torch.cat([input_in, input_out], 2)
-        gi = F.linear(inputs, self.w_ih, self.b_ih)
-        gh = F.linear(hidden, self.w_hh, self.b_hh)
-        i_r, i_i, i_n = gi.chunk(3, 2)
-        h_r, h_i, h_n = gh.chunk(3, 2)
-        resetgate = torch.sigmoid(i_r + h_r)
-        inputgate = torch.sigmoid(i_i + h_i)
-        newgate = torch.tanh(i_n + resetgate * h_n)
-        hy = newgate + inputgate * (hidden - newgate)
-        return hy
-
-    def forward(self, A, hidden):
-        for i in range(self.step):
-            hidden = self.GNNCell(A, hidden)
-        return hidden
-
-
-class Attention_SessionGraph(Module):
-    def __init__(self, opt, n_node):
-        super(Attention_SessionGraph, self).__init__()
-        self.hidden_size = opt.hiddenSize
-        self.n_node = n_node
-        self.nonhybrid = opt.nonhybrid
-
-        self.embedding = nn.Embedding(self.n_node, self.hidden_size, padding_idx=0)
-        
-        self.max_len = opt.max_len
-        self.position_emb_dim = opt.position_emb_dim
-        if self.position_emb_dim != self.hidden_size:
-            self.position_proj = nn.Linear(self.hidden_size + self.position_emb_dim, self.hidden_size)
-            self.requires_projection = True
-        else:
-            self.requires_projection = False
-            self.position_proj = None
-            
-        self.position_embedding = nn.Embedding(self.max_len + 1, self.position_emb_dim, padding_idx=0)
-
-        self.tagnn = Attention_GNN(self.hidden_size, step=opt.step)
-        
-        # یکپارچه‌سازی STAR (بدون پارامتر time_embed_dim)
-        self.star_gnn = TimeAwareStarGNN(
-            hidden_size=self.hidden_size,
-            num_heads=8
-        )
-        
-        self.layer_norm1 = nn.LayerNorm(self.hidden_size)
-        
-        self.attn = nn.MultiheadAttention(
-            embed_dim=self.hidden_size,
-            num_heads=8,
-            dropout=0.3,
-            batch_first=True
-        )
-
-        self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
-        self.linear_two = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
-        self.linear_three = nn.Linear(self.hidden_size, 1, bias=False)
-        self.linear_transform = nn.Linear(self.hidden_size * 3, self.hidden_size, bias=True)
-        self.linear_t = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
-        
-        self.loss_function = nn.CrossEntropyLoss(label_smoothing=0.2)
-
-        self.ssl_weight = opt.ssl_weight
-        self.ssl_temperature = opt.ssl_temperature
-        projection_dim = opt.ssl_projection_dim
-        self.projection_head_ssl = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size * 2),
-            nn.ReLU(inplace=True),
-            nn.Linear(self.hidden_size * 2, projection_dim)
-        )
-        self.reset_parameters()
-        
-        self.dropout = nn.Dropout(0.3)
-        
-        self.optimizer = torch.optim.AdamW(self.parameters(), lr=opt.lr, weight_decay=opt.l2)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            self.optimizer, 
-            T_0=10, 
-            T_mult=2, 
-            eta_min=1e-5
-        )
-
-
-    def reset_parameters(self):
-        stdv = 1.0 / math.sqrt(self.hidden_size)
-        for name, weight in self.named_parameters():
-            if name.startswith("tagnn.") or name.startswith("star_gnn."): 
-                continue
-            if 'bias' in name:
-                nn.init.zeros_(weight)
-            else:
-                if 'embedding.weight' in name and 'position_embedding' not in name:
-                    nn.init.xavier_uniform_(weight)
-                elif 'position_embedding.weight' in name:
-                    nn.init.xavier_uniform_(weight)
-                elif weight.dim() > 1:
-                    weight.data.uniform_(-stdv, stdv)
-        
-        if self.embedding.padding_idx is not None:
-            with torch.no_grad():
-                self.embedding.weight[self.embedding.padding_idx].fill_(0)
-        if self.position_embedding.padding_idx is not None:
-            with torch.no_grad():
-                self.position_embedding.weight[self.position_embedding.padding_idx].fill_(0)
-
-
-    def _get_seq_hidden_with_position(self, gnn_output_on_unique_nodes, alias_inputs_for_sequence, position_ids_for_sequence):
-        batch_size = gnn_output_on_unique_nodes.size(0)
-        max_seq_len_in_batch = alias_inputs_for_sequence.size(1)
-        
-        alias_indices_expanded = alias_inputs_for_sequence.long().unsqueeze(-1).expand(-1, -1, self.hidden_size)
-        
-        seq_item_hidden = torch.gather(
-            gnn_output_on_unique_nodes, 
-            1, 
-            alias_indices_expanded
-        )
-            
-        pos_embeds = self.position_embedding(position_ids_for_sequence.long())
-        
-        if self.position_emb_dim == self.hidden_size:
-            seq_hidden_final = seq_item_hidden + pos_embeds
-        else:
-            combined = torch.cat([seq_item_hidden, pos_embeds], dim=-1)
-            seq_hidden_final = self.position_proj(combined)
-            
-        return seq_hidden_final
-
-
-    def forward(self, unique_item_inputs, A_matrix, time_diffs):
-        hidden = self.embedding(unique_item_inputs)
-        hidden = self.dropout(hidden)
-        hidden = self.tagnn(A_matrix, hidden)
-        
-        # یکپارچه‌سازی STAR
-        hidden, star_context = self.star_gnn(hidden, time_diffs)
-        
-        transformer_key_padding_mask = (unique_item_inputs == self.embedding.padding_idx)
-        
-        x = hidden
-        x_norm = self.layer_norm1(x)
-        x_attn, _ = self.attn(x_norm, x_norm, x_norm, 
-                              key_padding_mask=transformer_key_padding_mask)
-        hidden = x + self.dropout(x_attn)
-
-        return hidden, star_context
-
-
-    def compute_scores(self, seq_hidden_time_aware, star_context, mask_for_scoring):
-        actual_lengths = torch.sum(mask_for_scoring, 1).long()
-        last_item_indices = torch.clamp(actual_lengths - 1, min=0)
-        
-        batch_indices = torch.arange(seq_hidden_time_aware.shape[0], 
-                                    device=seq_hidden_time_aware.device)
-        ht = seq_hidden_time_aware[batch_indices, last_item_indices]
-
-        q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1])
-        q2 = self.linear_two(seq_hidden_time_aware)
-        
-        alpha_logits = self.linear_three(torch.sigmoid(q1 + q2))
-        alpha_logits_masked = alpha_logits.masked_fill(mask_for_scoring.unsqueeze(-1) == 0, -1e9)
-        alpha = F.softmax(alpha_logits_masked, dim=1)
-        
-        a = torch.sum(alpha * seq_hidden_time_aware * mask_for_scoring.unsqueeze(-1).float(), dim=1)
-        
-        # ترکیب با زمینه STAR
-        combined = torch.cat([a, ht, star_context], dim=1)
-        a = self.linear_transform(combined)
-
-        candidate_item_embeddings = self.embedding.weight[1:] 
-        scores = torch.matmul(a, candidate_item_embeddings.transpose(0, 1))
-        return scores
-
-    def get_session_embedding_for_ssl(self, seq_hidden_time_aware, mask_for_ssl):
-        actual_lengths = torch.sum(mask_for_ssl, 1).long()
-        last_item_indices = torch.clamp(actual_lengths - 1, min=0)
-        batch_indices = torch.arange(seq_hidden_time_aware.shape[0], 
-                                    device=seq_hidden_time_aware.device)
-        session_repr = seq_hidden_time_aware[batch_indices, last_item_indices]
-        return session_repr
-
-    def calculate_infonce_loss(self, z1, z2):
-        z1_norm = F.normalize(z1, dim=-1)
-        z2_norm = F.normalize(z2, dim=-1)
-        sim_matrix = torch.matmul(z1_norm, z2_norm.T) / self.ssl_temperature
-        labels = torch.arange(z1_norm.size(0)).long().to(z1_norm.device)
-        loss_ssl = F.cross_entropy(sim_matrix, labels)
-        return loss_ssl
-
-
-def train_test(model, train_data, test_data, opt, device):
-    model_module = model.module if isinstance(model, torch.nn.DataParallel) else model
-
-    print(f'Start training epoch {opt.current_epoch_num}: {datetime.datetime.now()}')
-    model.train()
-
-    total_loss_epoch = 0.0
-    total_main_loss_epoch = 0.0
-    total_ssl_loss_epoch = 0.0
-    num_batches_processed = 0
-
-    current_batch_size = opt.batchSize
-    slices = train_data.generate_batch(current_batch_size)
-    if not slices:
-        print("Warning: No batches generated from training data. Skipping training for this epoch.")
-        return 0.0, 0.0
-
-    for i_slice_indices, j_batch_num in tqdm(zip(slices, np.arange(len(slices))), total=len(slices), desc=f"Epoch {opt.current_epoch_num} Training"):
-        if len(i_slice_indices) == 0: 
-            continue
-
-        model_module.optimizer.zero_grad()
-
-        ssl_drop_prob = opt.ssl_item_drop_prob
-        data_v1, data_v2, targets_main_np, mask_main_np, time_diffs_v1, time_diffs_v2 = train_data.get_slice(i_slice_indices, ssl_item_drop_prob=ssl_drop_prob)
-
-        if data_v1[0].size == 0 or data_v2[0].size == 0:
-            continue
-
-        alias_inputs_v1, A_v1, items_v1_unique, mask_v1_ssl, position_ids_v1 = data_v1
-        alias_inputs_v2, A_v2, items_v2_unique, mask_v2_ssl, position_ids_v2 = data_v2
-
-        items_v1_unique = torch.from_numpy(items_v1_unique).long().to(device)
-        A_v1 = torch.from_numpy(A_v1).float().to(device)
-        alias_inputs_v1 = torch.from_numpy(alias_inputs_v1).long().to(device)
-        mask_v1_ssl = torch.from_numpy(mask_v1_ssl).long().to(device)
-        position_ids_v1 = torch.from_numpy(position_ids_v1).long().to(device)
-        time_diffs_v1 = torch.from_numpy(time_diffs_v1).float().to(device)
-
-        items_v2_unique = torch.from_numpy(items_v2_unique).long().to(device)
-        A_v2 = torch.from_numpy(A_v2).float().to(device)
-        alias_inputs_v2 = torch.from_numpy(alias_inputs_v2).long().to(device)
-        mask_v2_ssl = torch.from_numpy(mask_v2_ssl).long().to(device)
-        position_ids_v2 = torch.from_numpy(position_ids_v2).long().to(device)
-        time_diffs_v2 = torch.from_numpy(time_diffs_v2).float().to(device)
-
-        targets_main = torch.from_numpy(targets_main_np).long().to(device)
-        mask_main = torch.from_numpy(mask_main_np).long().to(device)
-
-        gnn_output_v1, star_context_v1 = model(items_v1_unique, A_v1, time_diffs_v1)
-        if gnn_output_v1.size(0) == 0:
-            continue
-            
-        seq_hidden_v1_time_aware = model_module._get_seq_hidden_with_position(gnn_output_v1, alias_inputs_v1, position_ids_v1)
-        scores_main = model_module.compute_scores(seq_hidden_v1_time_aware, star_context_v1, mask_main)
-        loss_main = model_module.loss_function(scores_main, targets_main - 1)
-
-        session_emb_v1_ssl = model_module.get_session_embedding_for_ssl(seq_hidden_v1_time_aware, mask_v1_ssl)
-        
-        gnn_output_v2, star_context_v2 = model(items_v2_unique, A_v2, time_diffs_v2)
-        if gnn_output_v2.size(0) == 0:
-            continue
-        seq_hidden_v2_time_aware = model_module._get_seq_hidden_with_position(gnn_output_v2, alias_inputs_v2, position_ids_v2)
-        session_emb_v2_ssl = model_module.get_session_embedding_for_ssl(seq_hidden_v2_time_aware, mask_v2_ssl)
-
-        projected_emb_v1 = model_module.projection_head_ssl(session_emb_v1_ssl)
-        projected_emb_v2 = model_module.projection_head_ssl(session_emb_v2_ssl)
-        loss_ssl = model_module.calculate_infonce_loss(projected_emb_v1, projected_emb_v2)
-
-        combined_loss = loss_main + model_module.ssl_weight * loss_ssl
-        
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        combined_loss.backward()
-        model_module.optimizer.step()
-        model_module.scheduler.step()
-
-        total_loss_epoch += combined_loss.item()
-        total_main_loss_epoch += loss_main.item()
-        total_ssl_loss_epoch += loss_ssl.item()
-        num_batches_processed += 1
-
-        if num_batches_processed > 0 and j_batch_num > 0 and len(slices) > 5 and j_batch_num % int(len(slices) / 5) == 0:
-            print('[%d/%d] Total Loss: %.4f (Main: %.4f, SSL: %.4f)' %
-                  (j_batch_num, len(slices), combined_loss.item(), loss_main.item(), loss_ssl.item()))
+def split_validation(data, valid_portion=0.1):
+    time_data = data[0]
+    train_set_x = data[1]
+    train_set_y = data[2]
     
-    if num_batches_processed > 0:
-        avg_total_loss = total_loss_epoch / num_batches_processed
-        avg_main_loss = total_main_loss_epoch / num_batches_processed
-        avg_ssl_loss = total_ssl_loss_epoch / num_batches_processed
-        print(f'\tTraining Epoch {opt.current_epoch_num} Loss (Avg): Total: {avg_total_loss:.3f} (Main: {avg_main_loss:.3f}, SSL: {avg_ssl_loss:.3f})')
-    else:
-        print(f'\tNo batches were effectively processed in epoch {opt.current_epoch_num}.')
+    n_samples = len(train_set_x)
+    sidx = np.arange(n_samples, dtype='int32')
+    np.random.shuffle(sidx)
+    
+    n_train = int(np.round(n_samples * (1. - valid_portion))
+    
+    valid_set_x = [train_set_x[i] for i in sidx[n_train:] if i < len(train_set_x)]
+    valid_set_y = [train_set_y[i] for i in sidx[n_train:] if i < len(train_set_y)]
+    
+    train_set_x = [train_set_x[i] for i in sidx[:n_train] if i < len(train_set_x)]
+    train_set_y = [train_set_y[i] for i in sidx[:n_train] if i < len(train_set_y)]
+    
+    return (train_set_x, train_set_y), (valid_set_x, valid_set_y)
 
-    print(f'Start Prediction for epoch {opt.current_epoch_num}: {datetime.datetime.now()}')
-    model.eval()
-    hit, mrr = [], []
-    slices_test = test_data.generate_batch(opt.batchSize)
-    if not slices_test:
-        print("Warning: No batches generated from test data. Skipping evaluation for this epoch.")
-        return 0.0, 0.0
+def data_masks(all_usr_pois, item_tail, max_len):
+    us_lens = [len(upois) for upois in all_usr_pois]
+    len_max = min(max(us_lens), max_len) if max_len > 0 else max(us_lens)
+    us_pois = [upois[:len_max] + item_tail * (len_max - min(len(upois), len_max)) for upois in all_usr_pois]
+    us_msks = [[1] * min(le, len_max) + [0] * (len_max - min(le, len_max)) for le in us_lens]
+    us_pos = [list(range(1, min(le, len_max)+1)) + [0] * (len_max - min(le, len_max)) for le in us_lens]
+    return us_pois, us_msks, us_pos, len_max
 
-    with torch.no_grad():
-        for i_test_slice_indices in tqdm(slices_test, desc=f"Epoch {opt.current_epoch_num} Evaluation"):
-            if len(i_test_slice_indices) == 0: 
-                continue
-
-            data_v1_test, _, targets_test_orig_np, mask_test_orig_np, time_diffs_test, _ = test_data.get_slice(i_test_slice_indices, ssl_item_drop_prob=0.0)
+class Dataset():
+    def __init__(self, data, time_data=None, shuffle=False, opt=None):
+        self.raw_inputs = [list(seq) for seq in data[0]]
+        
+        if isinstance(data[1], np.ndarray):
+            self.targets = data[1].tolist()
+        else:
+            self.targets = data[1]
             
-            if data_v1_test[0].size == 0: 
-                continue
+        self.time_data = time_data if time_data else [np.zeros(len(seq)) for seq in self.raw_inputs]
+        self.length = len(self.raw_inputs)
+        self.shuffle = shuffle
+        self.opt = opt
+        
+        if opt and hasattr(opt, 'max_len') and opt.max_len > 0:
+            self.len_max = opt.max_len
+        else:
+            us_lens_init = [len(upois) for upois in self.raw_inputs]
+            self.len_max = max(us_lens_init) if us_lens_init else 0
+        
+        padded_inputs, padded_mask, padded_pos, _ = data_masks(self.raw_inputs, [0], self.len_max)
+        self.inputs = np.asarray(padded_inputs)
+        self.mask = np.asarray(padded_mask)
+        self.positions = np.asarray(padded_pos)
+        self.time_diffs = self._compute_time_diffs()
 
-            alias_inputs_eval, A_eval, items_eval_unique, _, position_ids_eval = data_v1_test
-
-            items_eval_unique = torch.from_numpy(items_eval_unique).long().to(device)
-            A_eval = torch.from_numpy(A_eval).float().to(device)
-            alias_inputs_eval = torch.from_numpy(alias_inputs_eval).long().to(device)
-            position_ids_eval = torch.from_numpy(position_ids_eval).long().to(device)
-            time_diffs_test = torch.from_numpy(time_diffs_test).float().to(device)
-            mask_test_orig_cuda = torch.from_numpy(mask_test_orig_np).long().to(device)
-            targets_test_orig_cuda = torch.from_numpy(targets_test_orig_np).long().to(device)
-
-            gnn_output_eval, star_context_eval = model(items_eval_unique, A_eval, time_diffs_test)
-            if gnn_output_eval.size(0) == 0: 
-                continue
-
-            seq_hidden_eval_time_aware = model_module._get_seq_hidden_with_position(gnn_output_eval, alias_inputs_eval, position_ids_eval)
-            if seq_hidden_eval_time_aware.size(0) == 0: 
-                continue
-                
-            scores_eval = model_module.compute_scores(seq_hidden_eval_time_aware, star_context_eval, mask_test_orig_cuda)
-
-            sub_scores_top20_indices = scores_eval.topk(20)[1]
-            sub_scores_top20_indices_np = sub_scores_top20_indices.cpu().detach().numpy()
-            targets_eval_np = targets_test_orig_cuda.cpu().detach().numpy() - 1
-
-            for score_row, target_item in zip(sub_scores_top20_indices_np, targets_eval_np):
-                hit.append(np.isin(target_item, score_row))
-                if target_item in score_row:
-                    mrr.append(1 / (np.where(score_row == target_item)[0][0] + 1))
+    def _compute_time_diffs(self):
+        time_diffs = []
+        for i, session in enumerate(self.raw_inputs):
+            td_session = []
+            time_stamps = self.time_data[i]
+            for j in range(1, len(session)):
+                if j < len(time_stamps):
+                    td_session.append(time_stamps[j] - time_stamps[j-1])
                 else:
-                    mrr.append(0)
+                    td_session.append(0)
+            
+            if len(td_session) < self.len_max:
+                td_session += [0] * (self.len_max - len(td_session))
+            else:
+                td_session = td_session[:self.len_max]
+            time_diffs.append(td_session)
+        return np.array(time_diffs, dtype=np.float32)
 
-    hit_metric = np.mean(hit) * 100 if hit else 0.0
-    mrr_metric = np.mean(mrr) * 100 if mrr else 0.0
-    return hit_metric, mrr_metric
+    def generate_batch(self, batch_size):
+        if self.shuffle:
+            shuffled_arg = np.arange(self.length)
+            np.random.shuffle(shuffled_arg)
+            self.raw_inputs = [self.raw_inputs[i] for i in shuffled_arg]
+            self.targets = self.targets[shuffled_arg]
+            self.time_diffs = self.time_diffs[shuffled_arg]
+            
+            current_padded_inputs, current_padded_mask, current_padded_pos, _ = data_masks(self.raw_inputs, [0], self.len_max)
+            self.inputs = np.asarray(current_padded_inputs)
+            self.mask = np.asarray(current_padded_mask)
+            self.positions = np.asarray(current_padded_pos)
+
+        n_batch = int(self.length / batch_size)
+        if self.length % batch_size != 0:
+            n_batch += 1
+        slices = np.split(np.arange(n_batch * batch_size), n_batch)
+        if self.length == 0:
+             return []
+        slices[-1] = slices[-1][:(self.length - batch_size * (n_batch - 1))]
+        slices = [s for s in slices if len(s) > 0]
+        return slices
+
+    def _augment_sequence_item_dropout(self, seq, time_diff, drop_prob, max_len):
+        if drop_prob == 0:
+            return seq[:max_len] + [0] * (max_len - len(seq)), time_diff[:max_len] + [0] * (max_len - len(time_diff))
+        
+        augmented_seq = []
+        augmented_time = []
+        for i, item in enumerate(seq):
+            if random.random() > drop_prob:
+                augmented_seq.append(item)
+                if i < len(time_diff):
+                    augmented_time.append(time_diff[i])
+            if len(augmented_seq) >= max_len:
+                break
+                
+        if len(augmented_seq) == 0:
+            augmented_seq = [seq[0]]
+            augmented_time = [time_diff[0] if time_diff else 0]
+            
+        augmented_seq = augmented_seq[:max_len]
+        augmented_time = augmented_time[:max_len]
+        
+        return augmented_seq + [0] * (max_len - len(augmented_seq)), augmented_time + [0] * (max_len - len(augmented_time))
+
+    def _get_graph_data_for_view(self, current_inputs_batch_padded_items, time_diffs_batch):
+        items_list, A_list, alias_inputs_list = [], [], []
+        mask_list_for_view = [] 
+        positions_list_for_view = []
+        time_diffs_list = []
+
+        batch_max_n_node = 0
+        temp_n_nodes_for_batch = []
+        for u_input_single_items in current_inputs_batch_padded_items:
+            unique_nodes_in_seq = np.unique(np.array(u_input_single_items))
+            unique_nodes_in_seq = unique_nodes_in_seq[unique_nodes_in_seq != 0]
+            num_unique = len(unique_nodes_in_seq)
+            temp_n_nodes_for_batch.append(num_unique if num_unique > 0 else 1)
+        
+        batch_max_n_node = np.max(temp_n_nodes_for_batch) if temp_n_nodes_for_batch else 1
+
+        for idx, u_input_single_items in enumerate(current_inputs_batch_padded_items):
+            current_mask = [1 if item != 0 else 0 for item in u_input_single_items]
+            mask_list_for_view.append(current_mask)
+            
+            current_pos_seq = []
+            effective_len = 0
+            for item_val in u_input_single_items:
+                if item_val != 0:
+                    effective_len += 1
+                    current_pos_seq.append(effective_len)
+                else:
+                    current_pos_seq.append(0)
+            positions_list_for_view.append(current_pos_seq)
+
+            node = np.unique(np.array(u_input_single_items))
+            node = node[node != 0]
+            if len(node) == 0: 
+                node = np.array([0])
+            
+            items_list.append(node.tolist() + (batch_max_n_node - len(node)) * [0])
+            
+            u_A = np.zeros((batch_max_n_node, batch_max_n_node))
+            item_to_idx_map = {item_id: k for k, item_id in enumerate(node)}
+
+            for i_idx in np.arange(len(u_input_single_items) - 1):
+                item_curr = u_input_single_items[i_idx]
+                item_next = u_input_single_items[i_idx+1]
+
+                if item_curr == 0 or item_next == 0: 
+                    continue
+                
+                if item_curr in item_to_idx_map and item_next in item_to_idx_map:
+                    u = item_to_idx_map[item_curr]
+                    v = item_to_idx_map[item_next]
+                    u_A[u][v] += 1
+            
+            u_sum_in = np.sum(u_A, 0)
+            u_sum_in[u_sum_in == 0] = 1
+            u_A_in = np.divide(u_A, u_sum_in)
+            u_sum_out = np.sum(u_A, 1)
+            u_sum_out[u_sum_out == 0] = 1
+            u_A_out = np.divide(u_A.transpose(), u_sum_out)
+            u_A_out = u_A_out.transpose()
+            A_list.append(np.concatenate([u_A_in, u_A_out], axis=1))
+
+            alias_for_current_seq = []
+            for item_val_in_seq in u_input_single_items:
+                if item_val_in_seq == 0: 
+                    alias_for_current_seq.append(0)
+                elif item_val_in_seq in item_to_idx_map:
+                    alias_for_current_seq.append(item_to_idx_map[item_val_in_seq])
+                else: 
+                    alias_for_current_seq.append(0)
+            alias_inputs_list.append(alias_for_current_seq)
+            
+            time_diffs_list.append(time_diffs_batch[idx])
+            
+        return np.array(alias_inputs_list), np.array(A_list), np.array(items_list), \
+               np.array(mask_list_for_view), np.array(positions_list_for_view), np.array(time_diffs_list)
+
+    def get_slice(self, batch_indices, ssl_item_drop_prob=0.2):
+        if len(batch_indices) == 0:
+            return (np.array([], dtype=np.int64),  np.array([], dtype=np.float32), np.array([], dtype=np.int64), np.array([], dtype=np.int64),np.array([], dtype=np.int64)), (np.array([], dtype=np.int64), np.array([], dtype=np.float32),np.array([], dtype=np.int64),np.array([], dtype=np.int64), np.array([], dtype=np.int64)), np.array([], dtype=np.int64), np.array([], dtype=np.int64),np.array([], dtype=np.float32),np.array([], dtype=np.float32)
+
+        batch_raw_inputs_unpadded = [self.raw_inputs[idx] for idx in batch_indices]
+        batch_targets = self.targets[batch_indices]
+        batch_time_diffs = [self.time_diffs[idx] for idx in batch_indices]
+        
+        batch_us_lens = [len(s) for s in batch_raw_inputs_unpadded]
+        current_batch_max_len = min(max(batch_us_lens) if batch_us_lens else 0, self.len_max)
+        if current_batch_max_len == 0 and len(batch_raw_inputs_unpadded) > 0:
+             current_batch_max_len = 1
+
+        inputs_v1_padded_items = []
+        time_diffs_v1 = []
+        for i, seq in enumerate(batch_raw_inputs_unpadded):
+            padded_seq, padded_time = self._augment_sequence_item_dropout(seq, batch_time_diffs[i], 0.0, current_batch_max_len)
+            inputs_v1_padded_items.append(padded_seq)
+            time_diffs_v1.append(padded_time)
+            
+        inputs_v2_padded_items = []
+        time_diffs_v2 = []
+        for i, seq in enumerate(batch_raw_inputs_unpadded):
+            padded_seq, padded_time = self._augment_sequence_item_dropout(seq, batch_time_diffs[i], ssl_item_drop_prob, current_batch_max_len)
+            inputs_v2_padded_items.append(padded_seq)
+            time_diffs_v2.append(padded_time)
+
+        alias_v1, A_v1, items_v1, mask_v1_ssl, positions_v1, time_diffs_v1 = self._get_graph_data_for_view(
+            inputs_v1_padded_items, time_diffs_v1
+        )
+        alias_v2, A_v2, items_v2, mask_v2_ssl, positions_v2, time_diffs_v2 = self._get_graph_data_for_view(
+            inputs_v2_padded_items, time_diffs_v2
+        )
+
+        _, batch_mask_main_list, _, _ = data_masks(batch_raw_inputs_unpadded, [0], current_batch_max_len)
+        
+        return (alias_v1, A_v1, items_v1, mask_v1_ssl, positions_v1), \
+               (alias_v2, A_v2, items_v2, mask_v2_ssl, positions_v2), \
+               batch_targets, np.array(batch_mask_main_list), \
+               np.array(time_diffs_v1), np.array(time_diffs_v2)
