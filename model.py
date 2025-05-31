@@ -2,10 +2,6 @@
 # This code builds on https://github.com/CRIPAC-DIG/TAGNN #
 # and integrates STAR: https://github.com/yeganegi-reza/STAR #
 ############################################################
-############################################################
-# This code builds on https://github.com/CRIPAC-DIG/TAGNN #
-# and integrates STAR: https://github.com/yeganegi-reza/STAR #
-############################################################
 
 from tqdm import tqdm
 import datetime
@@ -18,12 +14,13 @@ from torch.nn import Module, Parameter
 import torch.nn.functional as F
 
 class TimeAwareStarGNN(nn.Module):
-    def __init__(self, hidden_size, time_embed_dim=8, num_heads=8):
+    def __init__(self, hidden_size, num_heads=8):
         super().__init__()
-        self.time_embed = nn.Linear(time_embed_dim, hidden_size)
-        self.star_center = nn.Parameter(torch.Tensor(hidden_size))
+        # نگاشت تفاوت زمانی (اسکالر) به فضای پنهان
+        self.time_embed = nn.Linear(1, hidden_size)
         
-        # مقداردهی اولیه مناسب برای تانسور 1 بعدی
+        # پارامتر گره ستاره مرکزی
+        self.star_center = nn.Parameter(torch.Tensor(hidden_size))
         stdv = 1.0 / math.sqrt(hidden_size)
         self.star_center.data.uniform_(-stdv, stdv)
         
@@ -39,33 +36,31 @@ class TimeAwareStarGNN(nn.Module):
         )
 
     def forward(self, hidden, time_diffs):
-        # Time-aware embedding
-        time_emb = self.time_embed(time_diffs.unsqueeze(-1))
+        # جاسازی زمانی: تبدیل شکل time_diffs به (batch_size, seq_len, 1)
+        time_emb = self.time_embed(time_diffs.unsqueeze(-1).float())
         hidden = hidden + time_emb
         
-        # Star topology integration
+        # ادغام توپولوژی ستاره
         batch_size, seq_len, _ = hidden.size()
         star_nodes = self.star_center.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1)
         augmented_hidden = torch.cat([star_nodes, hidden], dim=1)
         
-        # Star-attention mechanism
+        # مکانیزم توجه ستاره
         attn_output, _ = self.attn(
             augmented_hidden, augmented_hidden, augmented_hidden
         )
         attn_output = self.dropout(attn_output)
-        star_context = attn_output[:, 0]  # Extract star node representation
+        star_context = attn_output[:, 0]  # استخراج نمایندگی گره ستاره
         
-        # Residual connection and FFN
+        # اتصال باقیمانده و FFN
         output = augmented_hidden + attn_output
         output = self.norm(output)
         
-        # Feedforward network
+        # شبکه فیدفوروارد
         output = self.ffn(output) + output
         output = self.norm(output)
         
         return output[:, 1:], star_context
-
-# بقیه کد بدون تغییر (همانند قبل)...
 
 class Attention_GNN(Module):
     def __init__(self, hidden_size, step=2):
@@ -108,7 +103,7 @@ class Attention_GNN(Module):
         batch_size, num_nodes_in_hidden, _ = hidden.shape
         expected_A_feature_dim = 2 * num_nodes_in_hidden
 
-        # Ensure A has the correct feature dimension
+        # اطمینان از تطابق ابعاد ماتریس مجاورت
         if A.shape[2] < expected_A_feature_dim:
             pad_size = expected_A_feature_dim - A.shape[2]
             pad_tensor = torch.zeros(batch_size, A.shape[1], pad_size, 
@@ -167,10 +162,9 @@ class Attention_SessionGraph(Module):
 
         self.tagnn = Attention_GNN(self.hidden_size, step=opt.step)
         
-        # STAR integration
+        # یکپارچه‌سازی STAR (بدون پارامتر time_embed_dim)
         self.star_gnn = TimeAwareStarGNN(
             hidden_size=self.hidden_size,
-            time_embed_dim=8,
             num_heads=8
         )
         
@@ -263,7 +257,7 @@ class Attention_SessionGraph(Module):
         hidden = self.dropout(hidden)
         hidden = self.tagnn(A_matrix, hidden)
         
-        # STAR integration
+        # یکپارچه‌سازی STAR
         hidden, star_context = self.star_gnn(hidden, time_diffs)
         
         transformer_key_padding_mask = (unique_item_inputs == self.embedding.padding_idx)
@@ -294,7 +288,7 @@ class Attention_SessionGraph(Module):
         
         a = torch.sum(alpha * seq_hidden_time_aware * mask_for_scoring.unsqueeze(-1).float(), dim=1)
         
-        # Combine with STAR context
+        # ترکیب با زمینه STAR
         combined = torch.cat([a, ht, star_context], dim=1)
         a = self.linear_transform(combined)
 
