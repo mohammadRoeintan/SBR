@@ -2,6 +2,10 @@
 # This code builds on https://github.com/CRIPAC-DIG/TAGNN #
 # and integrates STAR: https://github.com/yeganegi-reza/STAR #
 ############################################################
+############################################################
+# This code builds on https://github.com/CRIPAC-DIG/TAGNN #
+# and integrates STAR: https://github.com/yeganegi-reza/STAR #
+############################################################
 
 from tqdm import tqdm
 import datetime
@@ -18,7 +22,10 @@ class TimeAwareStarGNN(nn.Module):
         super().__init__()
         self.time_embed = nn.Linear(time_embed_dim, hidden_size)
         self.star_center = nn.Parameter(torch.Tensor(hidden_size))
-        nn.init.xavier_uniform_(self.star_center)
+        
+        # مقداردهی اولیه مناسب برای تانسور 1 بعدی
+        stdv = 1.0 / math.sqrt(hidden_size)
+        self.star_center.data.uniform_(-stdv, stdv)
         
         self.attn = nn.MultiheadAttention(
             hidden_size, num_heads, batch_first=True
@@ -57,6 +64,8 @@ class TimeAwareStarGNN(nn.Module):
         output = self.norm(output)
         
         return output[:, 1:], star_context
+
+# بقیه کد بدون تغییر (همانند قبل)...
 
 class Attention_GNN(Module):
     def __init__(self, hidden_size, step=2):
