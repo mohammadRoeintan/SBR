@@ -16,7 +16,7 @@ def split_validation(data, valid_portion=0.1):
     sidx = np.arange(n_samples, dtype='int32')
     np.random.shuffle(sidx)  # داده‌ها را تصادفی می‌کنیم
     
-    n_train = int(np.round(n_samples * (1. - valid_portion))
+    n_train = int(np.round(n_samples * (1. - valid_portion)))
     
     # ایجاد داده‌های آموزشی و اعتبارسنجی
     train_x = [train_set_x[i] for i in sidx[:n_train]]
