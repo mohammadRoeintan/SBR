@@ -4,35 +4,28 @@
 ##################################################################
 
 import numpy as np
-import torch
-import random
-import bisect
-import numpy as np
-import torch
 import random
 from collections import defaultdict
 
 def split_validation(data, valid_portion=0.1):
     # داده‌ها را به دو بخش train و valid تقسیم می‌کند
-    time_data = data[0]
-    train_set_x = data[1]
-    train_set_y = data[2]
+    train_set_x = data[0]
+    train_set_y = data[1]
     
     n_samples = len(train_set_x)
     sidx = np.arange(n_samples, dtype='int32')
     np.random.shuffle(sidx)  # داده‌ها را تصادفی می‌کنیم
     
-    n_train = int(np.round(n_samples * (1. - valid_portion)))
+    n_train = int(np.round(n_samples * (1. - valid_portion))
     
-    # بررسی ایندکس‌ها برای جلوگیری از خطا
-    valid_set_x = [train_set_x[i] for i in sidx[n_train:] if i < len(train_set_x)]
-    valid_set_y = [train_set_y[i] for i in sidx[n_train:] if i < len(train_set_y)]
+    # ایجاد داده‌های آموزشی و اعتبارسنجی
+    train_x = [train_set_x[i] for i in sidx[:n_train]]
+    train_y = [train_set_y[i] for i in sidx[:n_train]]
     
-    train_set_x = [train_set_x[i] for i in sidx[:n_train] if i < len(train_set_x)]
-    train_set_y = [train_set_y[i] for i in sidx[:n_train] if i < len(train_set_y)]
+    valid_x = [train_set_x[i] for i in sidx[n_train:]]
+    valid_y = [train_set_y[i] for i in sidx[n_train:]]
     
-    return (train_set_x, train_set_y), (valid_set_x, valid_set_y)
-
+    return (train_x, train_y), (valid_x, valid_y)
 
 def data_masks(all_usr_pois, item_tail, max_len):
     us_lens = [len(upois) for upois in all_usr_pois]
