@@ -7,12 +7,24 @@ import numpy as np
 import torch
 import random
 import bisect
+import numpy as np
+import torch
+import random
+from collections import defaultdict
 
 def split_validation(train_set, valid_portion):
     train_set_x, train_set_y = train_set
+    
+    # تبدیل به لیست اگر آرایه NumPy باشد
+    if isinstance(train_set_x, np.ndarray):
+        train_set_x = train_set_x.tolist()
+    if isinstance(train_set_y, np.ndarray):
+        train_set_y = train_set_y.tolist()
+    
     n_samples = len(train_set_x)
     sidx = np.random.permutation(n_samples)
     n_train = int(np.round(n_samples * (1. - valid_portion)))
+    
     valid_set_x = [train_set_x[s] for s in sidx[n_train:]]
     valid_set_y = [train_set_y[s] for s in sidx[n_train:]]
     train_set_x = [train_set_x[s] for s in sidx[:n_train]]
@@ -20,18 +32,26 @@ def split_validation(train_set, valid_portion):
 
     return (train_set_x, train_set_y), (valid_set_x, valid_set_y)
 
+
 def data_masks(all_usr_pois, item_tail, max_len):
     us_lens = [len(upois) for upois in all_usr_pois]
     len_max = min(max(us_lens), max_len) if max_len > 0 else max(us_lens)
     us_pois = [upois[:len_max] + item_tail * (len_max - min(len(upois), len_max)) for upois in all_usr_pois]
     us_msks = [[1] * min(le, len_max) + [0] * (len_max - min(le, len_max)) for le in us_lens]
-    us_pos = [list(range(1, min(le, len_max)+1) + [0] * (len_max - min(le, len_max))) for le in us_lens]
+    us_pos = [list(range(1, min(le, len_max)+1) + [0] * (len_max - min(le, len_max)) for le in us_lens]
     return us_pois, us_msks, us_pos, len_max
 
 class Dataset():
     def __init__(self, data, time_data=None, shuffle=False, opt=None):
+        # تبدیل داده‌ها به لیست
         self.raw_inputs = [list(seq) for seq in data[0]]
-        self.targets = np.asarray(data[1])
+        
+        # تبدیل اهداف به لیست اگر آرایه NumPy باشد
+        if isinstance(data[1], np.ndarray):
+            self.targets = data[1].tolist()
+        else:
+            self.targets = data[1]
+            
         self.time_data = time_data if time_data else [np.zeros(len(seq)) for seq in self.raw_inputs]
         self.length = len(self.raw_inputs)
         self.shuffle = shuffle
@@ -66,6 +86,7 @@ class Dataset():
                 td_session = td_session[:self.len_max]
             time_diffs.append(td_session)
         return np.array(time_diffs)
+        
 
     def generate_batch(self, batch_size):
         if self.shuffle:
