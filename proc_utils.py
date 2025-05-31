@@ -33,7 +33,6 @@ def data_masks(all_usr_pois, item_tail, max_len):
     us_pois = [upois[:len_max] + item_tail * (len_max - min(len(upois), len_max)) for upois in all_usr_pois]
     us_msks = [[1] * min(le, len_max) + [0] * (len_max - min(le, len_max)) for le in us_lens]
     
-    # اصلاح خطا: تبدیل range به لیست قبل از الحاق
     us_pos = [
         list(range(1, min(le, len_max) + 1)) + [0] * (len_max - min(le, len_max))
         for le in us_lens
@@ -92,9 +91,13 @@ class Dataset():
         if self.shuffle:
             shuffled_arg = np.arange(self.length)
             np.random.shuffle(shuffled_arg)
-            self.raw_inputs = [self.raw_inputs[i] for i in shuffled_arg]
-            self.targets = self.targets[shuffled_arg]
-            self.time_diffs = self.time_diffs[shuffled_arg]
+            
+            # تبدیل آرایه numpy به لیست پایتون برای ایندکس کردن
+            shuffled_indices = shuffled_arg.tolist()
+            
+            self.raw_inputs = [self.raw_inputs[i] for i in shuffled_indices]
+            self.targets = [self.targets[i] for i in shuffled_indices]  # استفاده از لیست برای ایندکس
+            self.time_diffs = [self.time_diffs[i] for i in shuffled_indices]
             
             current_padded_inputs, current_padded_mask, current_padded_pos, _ = data_masks(self.raw_inputs, [0], self.len_max)
             self.inputs = np.asarray(current_padded_inputs)
@@ -104,11 +107,14 @@ class Dataset():
         n_batch = int(self.length / batch_size)
         if self.length % batch_size != 0:
             n_batch += 1
-        slices = np.split(np.arange(n_batch * batch_size), n_batch)
-        if self.length == 0:
-             return []
-        slices[-1] = slices[-1][:(self.length - batch_size * (n_batch - 1))]
-        slices = [s for s in slices if len(s) > 0]
+        
+        # ایجاد اسلایس‌ها به صورت صحیح
+        slices = []
+        for i in range(n_batch):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, self.length)
+            slices.append(np.arange(start_idx, end_idx))
+        
         return slices
 
     def _augment_sequence_item_dropout(self, seq, time_diff, drop_prob, max_len):
