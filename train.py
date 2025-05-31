@@ -80,28 +80,41 @@ def main(opt):
         with open(os.path.join(data_dir, 'train.txt'), 'rb') as f:
             train_data_raw = pickle.load(f)
         with open(os.path.join(data_dir, 'test.txt'), 'rb') as f:
-            test_data_raw = pickle.load(f)
+            test_data_raw_orig = pickle.load(f)
         with open(os.path.join(data_dir, 'time_data.pkl'), 'rb') as f:
-            time_data = pickle.load(f)
+            time_data_all = pickle.load(f)
     except Exception as e:
         print(f"Error loading data: {e}")
         sys.exit(1)
 
-    # تقسیم داده‌های اعتبارسنجی
+    # استخراج داده‌های زمانی
+    time_data_train_orig = time_data_all['train_time_diffs']
+    time_data_test_orig = time_data_all['test_time_diffs']
+
     if opt.validation:
-        train_data_raw, valid_data_raw = split_validation(train_data_raw, opt.valid_portion)
-        test_data_raw = valid_data_raw
-        train_time_data, valid_time_data = split_validation(time_data, opt.valid_portion)
-        time_data = train_time_data
-        print(f'Using validation set ({len(valid_data_raw[0])} sessions) for testing.')
-    else:
-        print(f'Using full test set ({len(test_data_raw[0])} sessions).')
+        # تقسیم داده‌های آموزشی
+        (train_seqs, train_targets), (valid_seqs, valid_targets) = split_validation(
+            train_data_raw, opt.valid_portion
+        )
+        train_data_raw = (train_seqs, train_targets)
+        test_data_raw = (valid_seqs, valid_targets)
         
-    print(f'Training set size: {len(train_data_raw[0])} sessions.')
+        # تقسیم داده‌های زمانی با استفاده از همان شاخص‌ها
+        n_samples = len(time_data_train_orig)
+        indices = list(range(n_samples))
+        np.random.shuffle(indices)
+        n_train = int(np.round(n_samples * (1. - opt.valid_portion)))
+        
+        time_data_train = [time_data_train_orig[i] for i in indices[:n_train]]
+        time_data_valid = [time_data_train_orig[i] for i in indices[n_train:]]
+    else:
+        test_data_raw = test_data_raw_orig
+        time_data_train = time_data_train_orig
+        time_data_valid = time_data_test_orig
 
     # ایجاد لودرهای داده
-    train_data_loader = Dataset(train_data_raw, time_data, shuffle=True, opt=opt)
-    test_data_loader = Dataset(test_data_raw, time_data, shuffle=False, opt=opt)
+    train_data_loader = Dataset(train_data_raw, time_data_train, shuffle=True, opt=opt)
+    test_data_loader = Dataset(test_data_raw, time_data_valid, shuffle=False, opt=opt)
     
     # تنظیم حداکثر طول
     actual_dataset_max_len = train_data_loader.len_max
