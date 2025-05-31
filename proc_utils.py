@@ -12,24 +12,25 @@ import torch
 import random
 from collections import defaultdict
 
-def split_validation(train_set, valid_portion):
-    train_set_x, train_set_y = train_set
-    
-    # تبدیل به لیست اگر آرایه NumPy باشد
-    if isinstance(train_set_x, np.ndarray):
-        train_set_x = train_set_x.tolist()
-    if isinstance(train_set_y, np.ndarray):
-        train_set_y = train_set_y.tolist()
+def split_validation(data, valid_portion=0.1):
+    # داده‌ها را به دو بخش train و valid تقسیم می‌کند
+    time_data = data[0]
+    train_set_x = data[1]
+    train_set_y = data[2]
     
     n_samples = len(train_set_x)
-    sidx = np.random.permutation(n_samples)
+    sidx = np.arange(n_samples, dtype='int32')
+    np.random.shuffle(sidx)  # داده‌ها را تصادفی می‌کنیم
+    
     n_train = int(np.round(n_samples * (1. - valid_portion)))
     
-    valid_set_x = [train_set_x[s] for s in sidx[n_train:]]
-    valid_set_y = [train_set_y[s] for s in sidx[n_train:]]
-    train_set_x = [train_set_x[s] for s in sidx[:n_train]]
-    train_set_y = [train_set_y[s] for s in sidx[:n_train]]
-
+    # بررسی ایندکس‌ها برای جلوگیری از خطا
+    valid_set_x = [train_set_x[i] for i in sidx[n_train:] if i < len(train_set_x)]
+    valid_set_y = [train_set_y[i] for i in sidx[n_train:] if i < len(train_set_y)]
+    
+    train_set_x = [train_set_x[i] for i in sidx[:n_train] if i < len(train_set_x)]
+    train_set_y = [train_set_y[i] for i in sidx[:n_train] if i < len(train_set_y)]
+    
     return (train_set_x, train_set_y), (valid_set_x, valid_set_y)
 
 
