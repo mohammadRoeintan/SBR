@@ -1,43 +1,55 @@
+##################################################################
+# This code was adapted from https://github.com/CRIPAC-DIG/TAGNN #
+# and STAR: https://github.com/yeganegi-reza/STAR                #
+##################################################################
+##################################################################
+# This code was adapted from https://github.com/CRIPAC-DIG/TAGNN #
+# and STAR: https://github.com/yeganegi-reza/STAR                #
+##################################################################
+
 import numpy as np
-import torch
-import random
-import bisect
-import numpy as np
-import torch
 import random
 from collections import defaultdict
 
 def split_validation(data, valid_portion=0.1):
-    time_data = data[0]
-    train_set_x = data[1]
-    train_set_y = data[2]
+    # داده‌ها را به دو بخش train و valid تقسیم می‌کند
+    train_set_x = data[0]
+    train_set_y = data[1]
     
     n_samples = len(train_set_x)
     sidx = np.arange(n_samples, dtype='int32')
-    np.random.shuffle(sidx)
+    np.random.shuffle(sidx)  # داده‌ها را تصادفی می‌کنیم
     
     n_train = int(np.round(n_samples * (1. - valid_portion)))
     
-    valid_set_x = [train_set_x[i] for i in sidx[n_train:] if i < len(train_set_x)]
-    valid_set_y = [train_set_y[i] for i in sidx[n_train:] if i < len(train_set_y)]
+    # ایجاد داده‌های آموزشی و اعتبارسنجی
+    train_x = [train_set_x[i] for i in sidx[:n_train]]
+    train_y = [train_set_y[i] for i in sidx[:n_train]]
     
-    train_set_x = [train_set_x[i] for i in sidx[:n_train] if i < len(train_set_x)]
-    train_set_y = [train_set_y[i] for i in sidx[:n_train] if i < len(train_set_y)]
+    valid_x = [train_set_x[i] for i in sidx[n_train:]]
+    valid_y = [train_set_y[i] for i in sidx[n_train:]]
     
-    return (train_set_x, train_set_y), (valid_set_x, valid_set_y)
+    return (train_x, train_y), (valid_x, valid_y)
 
 def data_masks(all_usr_pois, item_tail, max_len):
     us_lens = [len(upois) for upois in all_usr_pois]
     len_max = min(max(us_lens), max_len) if max_len > 0 else max(us_lens)
     us_pois = [upois[:len_max] + item_tail * (len_max - min(len(upois), len_max)) for upois in all_usr_pois]
     us_msks = [[1] * min(le, len_max) + [0] * (len_max - min(le, len_max)) for le in us_lens]
-    us_pos = [list(range(1, min(le, len_max)+1)) + [0] * (len_max - min(le, len_max)) for le in us_lens]
+    
+    us_pos = [
+        list(range(1, min(le, len_max) + 1)) + [0] * (len_max - min(le, len_max))
+        for le in us_lens
+    ]
+    
     return us_pois, us_msks, us_pos, len_max
 
 class Dataset():
     def __init__(self, data, time_data=None, shuffle=False, opt=None):
+        # تبدیل داده‌ها به لیست
         self.raw_inputs = [list(seq) for seq in data[0]]
         
+        # تبدیل اهداف به لیست اگر آرایه NumPy باشد
         if isinstance(data[1], np.ndarray):
             self.targets = data[1].tolist()
         else:
@@ -70,21 +82,26 @@ class Dataset():
                     td_session.append(time_stamps[j] - time_stamps[j-1])
                 else:
                     td_session.append(0)
-            
+            # Pad time differences
             if len(td_session) < self.len_max:
                 td_session += [0] * (self.len_max - len(td_session))
             else:
                 td_session = td_session[:self.len_max]
             time_diffs.append(td_session)
-        return np.array(time_diffs, dtype=np.float32)
+        return np.array(time_diffs)
+        
 
     def generate_batch(self, batch_size):
         if self.shuffle:
             shuffled_arg = np.arange(self.length)
             np.random.shuffle(shuffled_arg)
-            self.raw_inputs = [self.raw_inputs[i] for i in shuffled_arg]
-            self.targets = self.targets[shuffled_arg]
-            self.time_diffs = self.time_diffs[shuffled_arg]
+            
+            # تبدیل آرایه numpy به لیست پایتون برای ایندکس کردن
+            shuffled_indices = shuffled_arg.tolist()
+            
+            self.raw_inputs = [self.raw_inputs[i] for i in shuffled_indices]
+            self.targets = [self.targets[i] for i in shuffled_indices]  # استفاده از لیست برای ایندکس
+            self.time_diffs = [self.time_diffs[i] for i in shuffled_indices]
             
             current_padded_inputs, current_padded_mask, current_padded_pos, _ = data_masks(self.raw_inputs, [0], self.len_max)
             self.inputs = np.asarray(current_padded_inputs)
@@ -94,35 +111,60 @@ class Dataset():
         n_batch = int(self.length / batch_size)
         if self.length % batch_size != 0:
             n_batch += 1
-        slices = np.split(np.arange(n_batch * batch_size), n_batch)
-        if self.length == 0:
-             return []
-        slices[-1] = slices[-1][:(self.length - batch_size * (n_batch - 1))]
-        slices = [s for s in slices if len(s) > 0]
+        
+        # ایجاد اسلایس‌ها به صورت صحیح
+        slices = []
+        for i in range(n_batch):
+            start_idx = i * batch_size
+            end_idx = min((i + 1) * batch_size, self.length)
+            slices.append(np.arange(start_idx, end_idx))
+        
         return slices
 
     def _augment_sequence_item_dropout(self, seq, time_diff, drop_prob, max_len):
-        if drop_prob == 0:
-            return seq[:max_len] + [0] * (max_len - len(seq)), time_diff[:max_len] + [0] * (max_len - len(time_diff))
+        # حفاظت در برابر سشن‌های خالی
+        if len(seq) == 0:
+            return [0] * max_len, [0] * max_len
+        
+        # حفاظت در برابر time_diff خالی
+        if len(time_diff) == 0:
+            time_diff = [0] * len(seq)
+        
+        # تطبیق طول time_diff با طول seq
+        if len(time_diff) < len(seq):
+            # اگر time_diff کوتاه‌تر است، با صفر پر کنید
+            time_diff += [0] * (len(seq) - len(time_diff))
+        elif len(time_diff) > len(seq):
+            # اگر time_diff طولانی‌تر است، آن را کوتاه کنید
+            time_diff = time_diff[:len(seq)]
         
         augmented_seq = []
         augmented_time = []
         for i, item in enumerate(seq):
             if random.random() > drop_prob:
                 augmented_seq.append(item)
-                if i < len(time_diff):
-                    augmented_time.append(time_diff[i])
+                augmented_time.append(time_diff[i])
             if len(augmented_seq) >= max_len:
                 break
                 
         if len(augmented_seq) == 0:
+            # همیشه حداقل یک آیتم داشته باشید
             augmented_seq = [seq[0]]
-            augmented_time = [time_diff[0] if time_diff else 0]
+            augmented_time = [time_diff[0]]
             
+        # کوتاه کردن به حداکثر طول
         augmented_seq = augmented_seq[:max_len]
         augmented_time = augmented_time[:max_len]
         
-        return augmented_seq + [0] * (max_len - len(augmented_seq)), augmented_time + [0] * (max_len - len(augmented_time))
+        # پدینگ اگر لازم بود
+        if len(augmented_seq) < max_len:
+            pad_length = max_len - len(augmented_seq)
+            augmented_seq += [0] * pad_length
+            augmented_time += [0] * pad_length
+            
+        return augmented_seq, augmented_time
+
+    # بقیه توابع بدون تغییر ...
 
     def _get_graph_data_for_view(self, current_inputs_batch_padded_items, time_diffs_batch):
         items_list, A_list, alias_inputs_list = [], [], []
@@ -195,6 +237,7 @@ class Dataset():
                     alias_for_current_seq.append(0)
             alias_inputs_list.append(alias_for_current_seq)
             
+            # Store time differences for this session
             time_diffs_list.append(time_diffs_batch[idx])
             
         return np.array(alias_inputs_list), np.array(A_list), np.array(items_list), \
@@ -204,9 +247,13 @@ class Dataset():
         if len(batch_indices) == 0:
             return (np.array([], dtype=np.int64),  np.array([], dtype=np.float32), np.array([], dtype=np.int64), np.array([], dtype=np.int64),np.array([], dtype=np.int64)), (np.array([], dtype=np.int64), np.array([], dtype=np.float32),np.array([], dtype=np.int64),np.array([], dtype=np.int64), np.array([], dtype=np.int64)), np.array([], dtype=np.int64), np.array([], dtype=np.int64),np.array([], dtype=np.float32),np.array([], dtype=np.float32)
 
-        batch_raw_inputs_unpadded = [self.raw_inputs[idx] for idx in batch_indices]
-        batch_targets = self.targets[batch_indices]
-        batch_time_diffs = [self.time_diffs[idx] for idx in batch_indices]
+        # تبدیل آرایه numpy به لیست پایتون برای ایندکس کردن
+        if isinstance(batch_indices, np.ndarray):
+            batch_indices = batch_indices.tolist()
+        
+        batch_raw_inputs_unpadded = [self.raw_inputs[i] for i in batch_indices]
+        batch_targets = [self.targets[i] for i in batch_indices]  # استفاده از لیست برای ایندکس
+        batch_time_diffs = [self.time_diffs[i] for i in batch_indices]
         
         batch_us_lens = [len(s) for s in batch_raw_inputs_unpadded]
         current_batch_max_len = min(max(batch_us_lens) if batch_us_lens else 0, self.len_max)
@@ -238,5 +285,5 @@ class Dataset():
         
         return (alias_v1, A_v1, items_v1, mask_v1_ssl, positions_v1), \
                (alias_v2, A_v2, items_v2, mask_v2_ssl, positions_v2), \
-               batch_targets, np.array(batch_mask_main_list), \
+               np.array(batch_targets), np.array(batch_mask_main_list), \
                np.array(time_diffs_v1), np.array(time_diffs_v2)
