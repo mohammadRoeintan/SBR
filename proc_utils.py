@@ -2,6 +2,10 @@
 # This code was adapted from https://github.com/CRIPAC-DIG/TAGNN #
 # and STAR: https://github.com/yeganegi-reza/STAR                #
 ##################################################################
+##################################################################
+# This code was adapted from https://github.com/CRIPAC-DIG/TAGNN #
+# and STAR: https://github.com/yeganegi-reza/STAR                #
+##################################################################
 
 import numpy as np
 import random
@@ -118,27 +122,49 @@ class Dataset():
         return slices
 
     def _augment_sequence_item_dropout(self, seq, time_diff, drop_prob, max_len):
-        if drop_prob == 0:
-            return seq[:max_len] + [0] * (max_len - len(seq)), time_diff[:max_len] + [0] * (max_len - len(time_diff))
+        # حفاظت در برابر سشن‌های خالی
+        if len(seq) == 0:
+            return [0] * max_len, [0] * max_len
+        
+        # حفاظت در برابر time_diff خالی
+        if len(time_diff) == 0:
+            time_diff = [0] * len(seq)
+        
+        # تطبیق طول time_diff با طول seq
+        if len(time_diff) < len(seq):
+            # اگر time_diff کوتاه‌تر است، با صفر پر کنید
+            time_diff += [0] * (len(seq) - len(time_diff))
+        elif len(time_diff) > len(seq):
+            # اگر time_diff طولانی‌تر است، آن را کوتاه کنید
+            time_diff = time_diff[:len(seq)]
         
         augmented_seq = []
         augmented_time = []
         for i, item in enumerate(seq):
             if random.random() > drop_prob:
                 augmented_seq.append(item)
-                if i < len(time_diff):
-                    augmented_time.append(time_diff[i])
+                augmented_time.append(time_diff[i])
             if len(augmented_seq) >= max_len:
                 break
                 
         if len(augmented_seq) == 0:
+            # همیشه حداقل یک آیتم داشته باشید
             augmented_seq = [seq[0]]
-            augmented_time = [time_diff[0] if time_diff else 0]
+            augmented_time = [time_diff[0]]
             
+        # کوتاه کردن به حداکثر طول
         augmented_seq = augmented_seq[:max_len]
         augmented_time = augmented_time[:max_len]
         
-        return augmented_seq + [0] * (max_len - len(augmented_seq)), augmented_time + [0] * (max_len - len(augmented_time))
+        # پدینگ اگر لازم بود
+        if len(augmented_seq) < max_len:
+            pad_length = max_len - len(augmented_seq)
+            augmented_seq += [0] * pad_length
+            augmented_time += [0] * pad_length
+            
+        return augmented_seq, augmented_time
+
+    # بقیه توابع بدون تغییر ...
 
     def _get_graph_data_for_view(self, current_inputs_batch_padded_items, time_diffs_batch):
         items_list, A_list, alias_inputs_list = [], [], []
