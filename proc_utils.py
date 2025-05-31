@@ -221,9 +221,13 @@ class Dataset():
         if len(batch_indices) == 0:
             return (np.array([], dtype=np.int64),  np.array([], dtype=np.float32), np.array([], dtype=np.int64), np.array([], dtype=np.int64),np.array([], dtype=np.int64)), (np.array([], dtype=np.int64), np.array([], dtype=np.float32),np.array([], dtype=np.int64),np.array([], dtype=np.int64), np.array([], dtype=np.int64)), np.array([], dtype=np.int64), np.array([], dtype=np.int64),np.array([], dtype=np.float32),np.array([], dtype=np.float32)
 
-        batch_raw_inputs_unpadded = [self.raw_inputs[idx] for idx in batch_indices]
-        batch_targets = self.targets[batch_indices]
-        batch_time_diffs = [self.time_diffs[idx] for idx in batch_indices]
+        # تبدیل آرایه numpy به لیست پایتون برای ایندکس کردن
+        if isinstance(batch_indices, np.ndarray):
+            batch_indices = batch_indices.tolist()
+        
+        batch_raw_inputs_unpadded = [self.raw_inputs[i] for i in batch_indices]
+        batch_targets = [self.targets[i] for i in batch_indices]  # استفاده از لیست برای ایندکس
+        batch_time_diffs = [self.time_diffs[i] for i in batch_indices]
         
         batch_us_lens = [len(s) for s in batch_raw_inputs_unpadded]
         current_batch_max_len = min(max(batch_us_lens) if batch_us_lens else 0, self.len_max)
@@ -255,5 +259,5 @@ class Dataset():
         
         return (alias_v1, A_v1, items_v1, mask_v1_ssl, positions_v1), \
                (alias_v2, A_v2, items_v2, mask_v2_ssl, positions_v2), \
-               batch_targets, np.array(batch_mask_main_list), \
+               np.array(batch_targets), np.array(batch_mask_main_list), \
                np.array(time_diffs_v1), np.array(time_diffs_v2)
