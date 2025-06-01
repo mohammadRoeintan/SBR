@@ -12,11 +12,11 @@ class TimeAwareStarGNN(nn.Module):
     def __init__(self, hidden_size, num_heads=8):
         super().__init__()
         self.time_embed = nn.Linear(1, hidden_size)
-        
+
         self.star_center = nn.Parameter(torch.Tensor(hidden_size))
         stdv = 1.0 / math.sqrt(hidden_size)
         self.star_center.data.uniform_(-stdv, stdv)
-        
+
         self.attn = nn.MultiheadAttention(
             hidden_size, num_heads, batch_first=True
         )
@@ -31,26 +31,26 @@ class TimeAwareStarGNN(nn.Module):
     def forward(self, hidden_seq, time_diffs_seq):
         if hidden_seq.size(1) != time_diffs_seq.size(1):
             raise ValueError(f"Sequence length mismatch in TimeAwareStarGNN: hidden_seq {hidden_seq.size(1)}, time_diffs_seq {time_diffs_seq.size(1)}")
-        
+
         time_emb = self.time_embed(time_diffs_seq.unsqueeze(-1).float())
         hidden_time_aware_seq = hidden_seq + time_emb
-        
+
         batch_size, seq_len, _ = hidden_time_aware_seq.size()
         star_nodes = self.star_center.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1)
         augmented_hidden_time_aware_seq = torch.cat([star_nodes, hidden_time_aware_seq], dim=1)
-        
+
         attn_output, _ = self.attn(
             augmented_hidden_time_aware_seq, augmented_hidden_time_aware_seq, augmented_hidden_time_aware_seq
         )
         attn_output = self.dropout(attn_output)
         star_context = attn_output[:, 0]
-        
+
         output_seq_items = hidden_time_aware_seq + attn_output[:, 1:]
         output_seq_items = self.norm(output_seq_items)
-        
+
         output_seq_items = self.ffn(output_seq_items) + output_seq_items
         output_seq_items = self.norm(output_seq_items)
-        
+
         return output_seq_items, star_context
 
 class Attention_GNN(Module):
@@ -71,17 +71,17 @@ class Attention_GNN(Module):
             self.hidden_size, self.hidden_size, bias=True)
         self.linear_edge_out = nn.Linear(
             self.hidden_size, self.hidden_size, bias=True)
-        
+
         self.dropout = nn.Dropout(0.3)
-        
+
         self.reset_parameters()
 
     def reset_parameters(self):
         stdv = 1.0 / math.sqrt(self.hidden_size)
         for weight in self.parameters():
-            if weight.dim() > 1: 
+            if weight.dim() > 1:
                  weight.data.uniform_(-stdv, stdv)
-            else: 
+            else:
                  weight.data.uniform_(-stdv, stdv)
         for layer in [self.linear_edge_in, self.linear_edge_out]:
             if hasattr(layer, 'weight') and layer.weight is not None:
@@ -91,7 +91,7 @@ class Attention_GNN(Module):
 
     def GNNCell(self, A, hidden):
         batch_size, num_nodes_in_hidden, _ = hidden.shape
-        
+
         expected_A_feature_dim = 2 * num_nodes_in_hidden
 
         if A.shape[1] != num_nodes_in_hidden:
@@ -99,7 +99,7 @@ class Attention_GNN(Module):
 
         if A.shape[2] < expected_A_feature_dim:
             pad_size = expected_A_feature_dim - A.shape[2]
-            pad_tensor = torch.zeros(batch_size, A.shape[1], pad_size, 
+            pad_tensor = torch.zeros(batch_size, A.shape[1], pad_size,
                                     device=A.device, dtype=A.dtype)
             A_compat = torch.cat([A, pad_tensor], dim=2)
         elif A.shape[2] > expected_A_feature_dim:
@@ -141,7 +141,7 @@ class Attention_SessionGraph(Module):
         self.nonhybrid = opt.nonhybrid
 
         self.embedding = nn.Embedding(self.n_node, self.hidden_size, padding_idx=0)
-        
+
         self.max_len = opt.max_len
         self.position_emb_dim = opt.position_emb_dim
         if self.position_emb_dim != self.hidden_size:
@@ -150,18 +150,18 @@ class Attention_SessionGraph(Module):
         else:
             self.requires_projection = False
             self.position_proj = None
-            
+
         self.position_embedding = nn.Embedding(self.max_len + 1, self.position_emb_dim, padding_idx=0)
 
         self.tagnn = Attention_GNN(self.hidden_size, step=opt.step)
-        
+
         self.star_gnn = TimeAwareStarGNN(
             hidden_size=self.hidden_size,
             num_heads=8
         )
-        
+
         self.layer_norm1 = nn.LayerNorm(self.hidden_size)
-        
+
         self.attn = nn.MultiheadAttention(
             embed_dim=self.hidden_size,
             num_heads=8,
@@ -174,7 +174,7 @@ class Attention_SessionGraph(Module):
         self.linear_three = nn.Linear(self.hidden_size, 1, bias=False)
         self.linear_transform = nn.Linear(self.hidden_size * 3, self.hidden_size, bias=True)
         self.linear_t = nn.Linear(self.hidden_size, self.hidden_size, bias=False)
-        
+
         self.loss_function = nn.CrossEntropyLoss(label_smoothing=0.2)
 
         self.ssl_weight = opt.ssl_weight
@@ -186,12 +186,12 @@ class Attention_SessionGraph(Module):
             nn.Linear(self.hidden_size * 2, projection_dim)
         )
         self.reset_parameters()
-        
+
         self.dropout = nn.Dropout(0.3)
-        
+
         self.optimizer = torch.optim.AdamW(self.parameters(), lr=opt.lr, weight_decay=opt.l2)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            self.optimizer, 
+            self.optimizer,
             T_0=10,
             T_mult=2,
             eta_min=1e-5
@@ -201,7 +201,7 @@ class Attention_SessionGraph(Module):
     def reset_parameters(self):
         stdv = 1.0 / math.sqrt(self.hidden_size)
         for name, weight in self.named_parameters():
-            if name.startswith("tagnn.") or name.startswith("star_gnn."): 
+            if name.startswith("tagnn.") or name.startswith("star_gnn."):
                 if hasattr(getattr(self, name.split('.')[0]), 'reset_parameters') and name.split('.')[0] in ['tagnn', 'star_gnn']:
                     continue
             if 'bias' in name:
@@ -213,7 +213,7 @@ class Attention_SessionGraph(Module):
                     nn.init.xavier_uniform_(weight)
                 elif weight.dim() > 1:
                     weight.data.uniform_(-stdv, stdv)
-        
+
         if self.embedding.padding_idx is not None:
             with torch.no_grad():
                 self.embedding.weight[self.embedding.padding_idx].fill_(0)
@@ -224,11 +224,11 @@ class Attention_SessionGraph(Module):
 
     def _get_seq_hidden_from_unique_nodes(self, gnn_output_on_unique_nodes, alias_inputs_for_sequence):
         batch_size = gnn_output_on_unique_nodes.size(0)
-        
+
         alias_indices_expanded = alias_inputs_for_sequence.long().unsqueeze(-1).expand(-1, -1, self.hidden_size)
-        
+
         seq_item_hidden = torch.gather(
-            gnn_output_on_unique_nodes, 
+            gnn_output_on_unique_nodes,
             1,
             alias_indices_expanded
         )
@@ -236,31 +236,31 @@ class Attention_SessionGraph(Module):
 
     def _add_positional_embeddings(self, seq_item_hidden, position_ids_for_sequence):
         pos_embeds = self.position_embedding(position_ids_for_sequence.long())
-        
+
         if self.position_emb_dim == self.hidden_size:
             seq_hidden_final = seq_item_hidden + pos_embeds
         else:
             combined = torch.cat([seq_item_hidden, pos_embeds], dim=-1)
             seq_hidden_final = self.position_proj(combined)
-            
+
         return seq_hidden_final
 
 
     def forward(self, unique_item_inputs, A_matrix, alias_inputs_for_sequence, position_ids_for_sequence, time_diffs_for_sequence, sequence_mask_for_attention):
         unique_item_embeds = self.embedding(unique_item_inputs)
         hidden_gnn_unique_nodes = self.dropout(unique_item_embeds)
-        
+
         hidden_gnn_unique_nodes = self.tagnn(A_matrix, hidden_gnn_unique_nodes)
 
         seq_hidden_from_gnn = self._get_seq_hidden_from_unique_nodes(hidden_gnn_unique_nodes, alias_inputs_for_sequence)
-                                                                
+
         seq_hidden_with_pos = self._add_positional_embeddings(seq_hidden_from_gnn, position_ids_for_sequence)
-                                                            
+
         seq_hidden_time_aware, star_context = self.star_gnn(seq_hidden_with_pos, time_diffs_for_sequence)
-                                                        
+
         x = seq_hidden_time_aware
         x_norm = self.layer_norm1(x)
-        x_attn, _ = self.attn(x_norm, x_norm, x_norm, 
+        x_attn, _ = self.attn(x_norm, x_norm, x_norm,
                               key_padding_mask=sequence_mask_for_attention)
         final_seq_hidden = x + self.dropout(x_attn)
 
@@ -270,20 +270,20 @@ class Attention_SessionGraph(Module):
     def compute_scores(self, final_seq_hidden, star_context, mask_for_scoring):
         actual_lengths = torch.sum(mask_for_scoring, 1).long()
         last_item_indices = torch.clamp(actual_lengths - 1, min=0)
-        
-        batch_indices = torch.arange(final_seq_hidden.shape[0], 
+
+        batch_indices = torch.arange(final_seq_hidden.shape[0],
                                     device=final_seq_hidden.device)
         ht = final_seq_hidden[batch_indices, last_item_indices]
 
         q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1])
         q2 = self.linear_two(final_seq_hidden)
-        
+
         alpha_logits = self.linear_three(torch.sigmoid(q1 + q2))
         alpha_logits_masked = alpha_logits.masked_fill(mask_for_scoring.unsqueeze(-1) == 0, -1e9)
         alpha = F.softmax(alpha_logits_masked, dim=1)
-        
+
         a = torch.sum(alpha * final_seq_hidden * mask_for_scoring.unsqueeze(-1).float(), dim=1)
-        
+
         combined_features = torch.cat([a, ht, star_context], dim=1)
         final_session_embedding = self.linear_transform(combined_features)
 
@@ -294,7 +294,7 @@ class Attention_SessionGraph(Module):
     def get_session_embedding_for_ssl(self, final_seq_hidden, mask_for_ssl):
         actual_lengths = torch.sum(mask_for_ssl, 1).long()
         last_item_indices = torch.clamp(actual_lengths - 1, min=0)
-        batch_indices = torch.arange(final_seq_hidden.shape[0], 
+        batch_indices = torch.arange(final_seq_hidden.shape[0],
                                     device=final_seq_hidden.device)
         session_repr = final_seq_hidden[batch_indices, last_item_indices]
         return session_repr
@@ -326,19 +326,21 @@ def train_test(model, train_data, test_data, opt, device):
         return 0.0, 0.0
 
     for i_slice_indices, j_batch_num in tqdm(zip(slices, np.arange(len(slices))), total=len(slices), desc=f"Epoch {opt.current_epoch_num} Training"):
-        if len(i_slice_indices) == 0: 
+        if len(i_slice_indices) == 0:
             continue
 
         model_module.optimizer.zero_grad()
 
         ssl_drop_prob = opt.ssl_item_drop_prob
-        
-        data_v1, data_v2, targets_main_np, mask_main_np, _, _ = train_data.get_slice(
+
+        # Correctly unpack all 6 return values from get_slice
+        data_v1_tuple, data_v2_tuple, targets_main_np, mask_main_np, time_diffs_v1_np, time_diffs_v2_np = train_data.get_slice(
             i_slice_indices, ssl_item_drop_prob=ssl_drop_prob
         )
-        
-        alias_inputs_v1, A_v1, items_v1_unique, mask_v1_ssl, position_ids_v1, time_diffs_v1 = data_v1
-        alias_inputs_v2, A_v2, items_v2_unique, mask_v2_ssl, position_ids_v2, time_diffs_v2 = data_v2
+
+        # Unpack the 5-element tuples for v1 and v2
+        alias_inputs_v1, A_v1, items_v1_unique, mask_v1_ssl, position_ids_v1 = data_v1_tuple
+        alias_inputs_v2, A_v2, items_v2_unique, mask_v2_ssl, position_ids_v2 = data_v2_tuple
 
 
         if items_v1_unique.size == 0 or items_v2_unique.size == 0:
@@ -350,34 +352,34 @@ def train_test(model, train_data, test_data, opt, device):
         alias_inputs_v1 = torch.from_numpy(alias_inputs_v1).long().to(device)
         mask_v1_ssl = torch.from_numpy(mask_v1_ssl).long().to(device)
         position_ids_v1 = torch.from_numpy(position_ids_v1).long().to(device)
-        time_diffs_v1 = torch.from_numpy(time_diffs_v1).float().to(device)
+        time_diffs_v1 = torch.from_numpy(time_diffs_v1_np).float().to(device) # Use the separately unpacked time_diffs
 
         items_v2_unique = torch.from_numpy(items_v2_unique).long().to(device)
         A_v2 = torch.from_numpy(A_v2).float().to(device)
         alias_inputs_v2 = torch.from_numpy(alias_inputs_v2).long().to(device)
         mask_v2_ssl = torch.from_numpy(mask_v2_ssl).long().to(device)
         position_ids_v2 = torch.from_numpy(position_ids_v2).long().to(device)
-        time_diffs_v2 = torch.from_numpy(time_diffs_v2).float().to(device)
+        time_diffs_v2 = torch.from_numpy(time_diffs_v2_np).float().to(device) # Use the separately unpacked time_diffs
 
         targets_main = torch.from_numpy(targets_main_np).long().to(device)
         mask_main_cuda = torch.from_numpy(mask_main_np).long().to(device)
         seq_attention_mask_v1 = (mask_main_cuda == 0)
 
         final_seq_hidden_v1, star_context_v1 = model(items_v1_unique, A_v1, alias_inputs_v1, position_ids_v1, time_diffs_v1, seq_attention_mask_v1)
-        
+
         if final_seq_hidden_v1.size(0) == 0:
             print("Skipping batch due to empty final_seq_hidden_v1.")
             continue
-            
+
         scores_main = model_module.compute_scores(final_seq_hidden_v1, star_context_v1, mask_main_cuda)
         loss_main = model_module.loss_function(scores_main, targets_main - 1)
 
         session_emb_v1_ssl = model_module.get_session_embedding_for_ssl(final_seq_hidden_v1, mask_v1_ssl)
-        
+
         seq_attention_mask_v2 = (mask_v2_ssl == 0)
 
         final_seq_hidden_v2, star_context_v2 = model(items_v2_unique, A_v2, alias_inputs_v2, position_ids_v2, time_diffs_v2, seq_attention_mask_v2)
-        
+
         if final_seq_hidden_v2.size(0) == 0:
             print("Skipping batch due to empty final_seq_hidden_v2.")
             continue
@@ -388,9 +390,9 @@ def train_test(model, train_data, test_data, opt, device):
         loss_ssl = model_module.calculate_infonce_loss(projected_emb_v1, projected_emb_v2)
 
         combined_loss = loss_main + model_module.ssl_weight * loss_ssl
-        
+
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
+
         combined_loss.backward()
         model_module.optimizer.step()
         model_module.scheduler.step()
@@ -403,7 +405,7 @@ def train_test(model, train_data, test_data, opt, device):
         if num_batches_processed > 0 and j_batch_num > 0 and len(slices) > 5 and j_batch_num % int(len(slices) / 5) == 0:
             print('[%d/%d] Total Loss: %.4f (Main: %.4f, SSL: %.4f)' %
                   (j_batch_num, len(slices), combined_loss.item(), loss_main.item(), loss_ssl.item()))
-    
+
     if num_batches_processed > 0:
         avg_total_loss = total_loss_epoch / num_batches_processed
         avg_main_loss = total_main_loss_epoch / num_batches_processed
@@ -422,16 +424,19 @@ def train_test(model, train_data, test_data, opt, device):
 
     with torch.no_grad():
         for i_test_slice_indices in tqdm(slices_test, desc=f"Epoch {opt.current_epoch_num} Evaluation"):
-            if len(i_test_slice_indices) == 0: 
+            if len(i_test_slice_indices) == 0:
                 continue
-            
-            data_v1_test, _, targets_test_orig_np, mask_test_orig_np, _, _ = test_data.get_slice(
+
+            # Correctly unpack all 6 return values from get_slice for evaluation
+            data_v1_test_tuple, _, targets_test_orig_np, mask_test_orig_np, time_diffs_eval_np, _ = test_data.get_slice(
                 i_test_slice_indices, ssl_item_drop_prob=0.0
             )
-            
-            alias_inputs_eval, A_eval, items_eval_unique, _, position_ids_eval, time_diffs_eval = data_v1_test
 
-            if items_eval_unique.size == 0: 
+            # Unpack the 5-element tuple for v1_test
+            alias_inputs_eval, A_eval, items_eval_unique, _, position_ids_eval = data_v1_test_tuple
+
+
+            if items_eval_unique.size == 0:
                 print("Skipping test batch due to empty unique items array.")
                 continue
 
@@ -439,18 +444,18 @@ def train_test(model, train_data, test_data, opt, device):
             A_eval = torch.from_numpy(A_eval).float().to(device)
             alias_inputs_eval = torch.from_numpy(alias_inputs_eval).long().to(device)
             position_ids_eval = torch.from_numpy(position_ids_eval).long().to(device)
-            time_diffs_eval = torch.from_numpy(time_diffs_eval).float().to(device)
-            
+            time_diffs_eval = torch.from_numpy(time_diffs_eval_np).float().to(device) # Use the separately unpacked time_diffs
+
             mask_test_orig_cuda = torch.from_numpy(mask_test_orig_np).long().to(device)
             targets_test_orig_cuda = torch.from_numpy(targets_test_orig_np).long().to(device)
             seq_attention_mask_eval = (mask_test_orig_cuda == 0)
 
             final_seq_hidden_eval, star_context_eval = model(items_eval_unique, A_eval, alias_inputs_eval, position_ids_eval, time_diffs_eval, seq_attention_mask_eval)
-            
-            if final_seq_hidden_eval.size(0) == 0: 
+
+            if final_seq_hidden_eval.size(0) == 0:
                 print("Skipping test batch due to empty final_seq_hidden_eval.")
                 continue
-                
+
             scores_eval = model_module.compute_scores(final_seq_hidden_eval, star_context_eval, mask_test_orig_cuda)
 
             sub_scores_top20_indices = scores_eval.topk(20)[1]
