@@ -157,68 +157,67 @@ class Attention_SessionGraph(Module):
 
         self.star_gnn = TimeAwareStarGNN(
             hidden_size=self.hidden_size,
-            num_heads=8 # Can be configured via opt if needed
+            num_heads=8 
         )
 
         self.layer_norm1 = nn.LayerNorm(self.hidden_size)
 
-        self.attn = nn.MultiheadAttention(
-            embed_dim=self.hidden_size,
-            num_heads=8, # Can be configured via opt if needed
-            dropout=0.3, # Can be configured via opt if needed
-            batch_first=True
-        )
+        # --- Multi-Head Attention نهایی حذف شد ---
+        # self.attn = nn.MultiheadAttention(
+        #     embed_dim=self.hidden_size,
+        #     num_heads=8, 
+        #     dropout=0.3, 
+        #     batch_first=True
+        # )
+        # --- پایان حذف ---
+
 
         self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_two = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_three = nn.Linear(self.hidden_size, 1, bias=False)
-        self.linear_transform = nn.Linear(self.hidden_size * 3, self.hidden_size, bias=True) # For a, ht, star_context
-        self.linear_t = nn.Linear(self.hidden_size, self.hidden_size, bias=False) # Unused? Check if this is needed
+        self.linear_transform = nn.Linear(self.hidden_size * 3, self.hidden_size, bias=True)
+        # self.linear_t = nn.Linear(self.hidden_size, self.hidden_size, bias=False) # همچنان استفاده نشده
 
-        self.loss_function = nn.CrossEntropyLoss(label_smoothing=0.2) # Label smoothing can be opt.label_smoothing
+        self.loss_function = nn.CrossEntropyLoss(label_smoothing=0.2)
 
         self.ssl_weight = opt.ssl_weight
         self.ssl_temperature = opt.ssl_temperature
         projection_dim = opt.ssl_projection_dim
         self.projection_head_ssl = nn.Sequential(
-            nn.Linear(self.hidden_size, self.hidden_size * 2), # Or make intermediate dim configurable
+            nn.Linear(self.hidden_size, self.hidden_size * 2),
             nn.ReLU(inplace=True),
             nn.Linear(self.hidden_size * 2, projection_dim)
         )
         self.reset_parameters()
 
-        self.dropout = nn.Dropout(0.3) # General dropout, can be opt.dropout
+        self.dropout = nn.Dropout(0.3) 
 
         self.optimizer = torch.optim.AdamW(self.parameters(), lr=opt.lr, weight_decay=opt.l2)
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             self.optimizer,
-            T_0=10, # Can be opt.scheduler_T0
-            T_mult=2, # Can be opt.scheduler_Tmult
-            eta_min=1e-5 # Can be opt.scheduler_eta_min
+            T_0=10, 
+            T_mult=2, 
+            eta_min=1e-5 
         )
 
 
     def reset_parameters(self):
         stdv = 1.0 / math.sqrt(self.hidden_size)
         for name, weight in self.named_parameters():
-            # Avoid re-initializing sub-modules that have their own reset_parameters
             if name.startswith("tagnn.") or name.startswith("star_gnn."):
-                # Check if the base module (tagnn or star_gnn) has reset_parameters
-                # This logic is a bit simplified; robust check might involve inspecting the module object itself
                 if hasattr(getattr(self, name.split('.')[0]), 'reset_parameters') and name.split('.')[0] in ['tagnn', 'star_gnn']:
-                    continue # Skip if sub-module handles its own reset
+                    continue 
             
             if 'bias' in name:
                 nn.init.zeros_(weight)
             else:
-                if 'embedding.weight' in name and 'position_embedding' not in name: # Item embedding
+                if 'embedding.weight' in name and 'position_embedding' not in name: 
                     nn.init.xavier_uniform_(weight)
-                elif 'position_embedding.weight' in name: # Positional embedding
-                    nn.init.xavier_uniform_(weight) # Or some other suitable init
-                elif weight.dim() > 1: # Other linear layers, etc.
+                elif 'position_embedding.weight' in name: 
+                    nn.init.xavier_uniform_(weight) 
+                elif weight.dim() > 1: 
                     weight.data.uniform_(-stdv, stdv)
         
-        # Ensure padding_idx in embeddings is zero
         if self.embedding.padding_idx is not None:
             with torch.no_grad():
                 self.embedding.weight[self.embedding.padding_idx].fill_(0)
@@ -228,28 +227,21 @@ class Attention_SessionGraph(Module):
 
 
     def _get_seq_hidden_from_unique_nodes(self, gnn_output_on_unique_nodes, alias_inputs_for_sequence):
-        batch_size = gnn_output_on_unique_nodes.size(0)
-        # alias_inputs_for_sequence shape: (batch_size, max_seq_len)
-        # gnn_output_on_unique_nodes shape: (batch_size, max_unique_nodes_in_batch, hidden_size)
-        
-        # Expand alias_inputs to gather along the hidden_size dimension
         alias_indices_expanded = alias_inputs_for_sequence.long().unsqueeze(-1).expand(-1, -1, self.hidden_size)
         
         seq_item_hidden = torch.gather(
             gnn_output_on_unique_nodes,
-            1, # Gather along the unique_nodes dimension
+            1, 
             alias_indices_expanded
         )
         return seq_item_hidden
 
     def _add_positional_embeddings(self, seq_item_hidden, position_ids_for_sequence):
-        # position_ids_for_sequence shape: (batch_size, max_seq_len)
         pos_embeds = self.position_embedding(position_ids_for_sequence.long())
-        # pos_embeds shape: (batch_size, max_seq_len, position_emb_dim)
 
-        if self.position_emb_dim == self.hidden_size: # If dims match, just add
+        if self.position_emb_dim == self.hidden_size: 
             seq_hidden_final = seq_item_hidden + pos_embeds
-        else: # If dims don't match, concatenate and project
+        else: 
             combined = torch.cat([seq_item_hidden, pos_embeds], dim=-1)
             seq_hidden_final = self.position_proj(combined)
             
@@ -257,101 +249,74 @@ class Attention_SessionGraph(Module):
 
 
     def forward(self, unique_item_inputs, A_matrix, alias_inputs_for_sequence, position_ids_for_sequence, time_diffs_for_sequence, sequence_mask_for_attention):
-        # unique_item_inputs: (batch_size, max_unique_nodes_in_batch) - IDs of unique items
-        # A_matrix: (batch_size, max_unique_nodes_in_batch, max_unique_nodes_in_batch * 2) - Adjacency matrix
-        # alias_inputs_for_sequence: (batch_size, max_seq_len) - Maps seq positions to unique node indices
-        # position_ids_for_sequence: (batch_size, max_seq_len) - Positional IDs for each item in sequence
-        # time_diffs_for_sequence: (batch_size, max_seq_len) - Time differences for each item
-        # sequence_mask_for_attention: (batch_size, max_seq_len) - Bool mask (True for padding) for MHA key_padding_mask
+        unique_item_embeds = self.embedding(unique_item_inputs)
+        hidden_gnn_unique_nodes = self.dropout(unique_item_embeds)
 
-        # 1. Embed unique items
-        unique_item_embeds = self.embedding(unique_item_inputs) # (batch_size, max_unique_nodes, hidden_size)
-        hidden_gnn_unique_nodes = self.dropout(unique_item_embeds) # Apply dropout
+        hidden_gnn_unique_nodes = self.tagnn(A_matrix, hidden_gnn_unique_nodes)
 
-        # 2. TAGNN processing on unique item graph
-        hidden_gnn_unique_nodes = self.tagnn(A_matrix, hidden_gnn_unique_nodes) # (batch_size, max_unique_nodes, hidden_size)
+        seq_hidden_from_gnn = self._get_seq_hidden_from_unique_nodes(hidden_gnn_unique_nodes, alias_inputs_for_sequence)
 
-        # 3. Map GNN outputs back to sequence format
-        seq_hidden_from_gnn = self._get_seq_hidden_from_unique_nodes(hidden_gnn_unique_nodes, alias_inputs_for_sequence) # (batch_size, max_seq_len, hidden_size)
+        seq_hidden_with_pos = self._add_positional_embeddings(seq_hidden_from_gnn, position_ids_for_sequence)
 
-        # 4. Add positional embeddings
-        seq_hidden_with_pos = self._add_positional_embeddings(seq_hidden_from_gnn, position_ids_for_sequence) # (batch_size, max_seq_len, hidden_size)
-
-        # 5. Time-Aware Star GNN processing
-        # time_diffs_for_sequence needs to be (batch_size, max_seq_len)
         seq_hidden_time_aware, star_context = self.star_gnn(seq_hidden_with_pos, time_diffs_for_sequence)
-        # seq_hidden_time_aware: (batch_size, max_seq_len, hidden_size)
-        # star_context: (batch_size, hidden_size)
-
-        # 6. Final Self-Attention Layer
-        x = seq_hidden_time_aware
-        x_norm = self.layer_norm1(x) # Apply LayerNorm before attention
-        # sequence_mask_for_attention should be True for positions to be ignored
-        x_attn, _ = self.attn(x_norm, x_norm, x_norm, 
-                              key_padding_mask=sequence_mask_for_attention) 
-        final_seq_hidden = x + self.dropout(x_attn) # Residual connection and dropout
+        
+        # --- تغییر به دلیل حذف Multi-Head Attention نهایی ---
+        # خروجی TimeAwareStarGNN مستقیماً (پس از LayerNorm) استفاده می‌شود
+        final_seq_hidden = self.layer_norm1(seq_hidden_time_aware)
+        # x = seq_hidden_time_aware
+        # x_norm = self.layer_norm1(x) 
+        # x_attn, _ = self.attn(x_norm, x_norm, x_norm, 
+        #                       key_padding_mask=sequence_mask_for_attention) 
+        # final_seq_hidden = x + self.dropout(x_attn) 
+        # --- پایان تغییر ---
 
         return final_seq_hidden, star_context
 
 
     def compute_scores(self, final_seq_hidden, star_context, mask_for_scoring):
-        # final_seq_hidden: (batch_size, max_seq_len, hidden_size)
-        # star_context: (batch_size, hidden_size)
-        # mask_for_scoring: (batch_size, max_seq_len) - 1 for actual items, 0 for padding
-
-        # Get hidden state of the last actual item (ht)
-        actual_lengths = torch.sum(mask_for_scoring, 1).long() # (batch_size)
-        # Clamp to avoid negative indices if a sequence is all padding (shouldn't happen with filtering)
+        actual_lengths = torch.sum(mask_for_scoring, 1).long()
         last_item_indices = torch.clamp(actual_lengths - 1, min=0) 
         
         batch_indices = torch.arange(final_seq_hidden.shape[0], 
                                     device=final_seq_hidden.device)
-        ht = final_seq_hidden[batch_indices, last_item_indices] # (batch_size, hidden_size)
+        ht = final_seq_hidden[batch_indices, last_item_indices]
 
-        # Attention mechanism for session summary 'a'
-        q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1]) # (batch_size, 1, hidden_size)
-        q2 = self.linear_two(final_seq_hidden) # (batch_size, max_seq_len, hidden_size)
+        q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1])
+        q2 = self.linear_two(final_seq_hidden) 
         
-        alpha_logits = self.linear_three(torch.sigmoid(q1 + q2)) # (batch_size, max_seq_len, 1)
-        # Mask out padding before softmax
-        alpha_logits_masked = alpha_logits.masked_fill(mask_for_scoring.unsqueeze(-1) == 0, -1e9) # Use a large negative number
-        alpha = F.softmax(alpha_logits_masked, dim=1) # (batch_size, max_seq_len, 1)
+        alpha_logits = self.linear_three(torch.sigmoid(q1 + q2))
+        alpha_logits_masked = alpha_logits.masked_fill(mask_for_scoring.unsqueeze(-1) == 0, -1e9) 
+        alpha = F.softmax(alpha_logits_masked, dim=1)
 
-        # Weighted sum of item hidden states
-        a = torch.sum(alpha * final_seq_hidden * mask_for_scoring.unsqueeze(-1).float(), dim=1) # (batch_size, hidden_size)
+        a = torch.sum(alpha * final_seq_hidden * mask_for_scoring.unsqueeze(-1).float(), dim=1)
 
-        # Combine features: attentive sum 'a', last item 'ht', and 'star_context'
-        combined_features = torch.cat([a, ht, star_context], dim=1) # (batch_size, hidden_size * 3)
-        final_session_embedding = self.linear_transform(combined_features) # (batch_size, hidden_size)
+        combined_features = torch.cat([a, ht, star_context], dim=1)
+        final_session_embedding = self.linear_transform(combined_features)
 
-        # Compute scores against all candidate items (excluding padding item 0)
-        candidate_item_embeddings = self.embedding.weight[1:] # (n_items, hidden_size)
-        scores = torch.matmul(final_session_embedding, candidate_item_embeddings.transpose(0, 1)) # (batch_size, n_items)
+        candidate_item_embeddings = self.embedding.weight[1:]
+        scores = torch.matmul(final_session_embedding, candidate_item_embeddings.transpose(0, 1))
         return scores
 
     def get_session_embedding_for_ssl(self, final_seq_hidden, mask_for_ssl):
-        # Use the hidden state of the last item in the (potentially augmented) sequence for SSL
         actual_lengths = torch.sum(mask_for_ssl, 1).long()
         last_item_indices = torch.clamp(actual_lengths - 1, min=0)
         batch_indices = torch.arange(final_seq_hidden.shape[0],
                                     device=final_seq_hidden.device)
-        session_repr = final_seq_hidden[batch_indices, last_item_indices] # (batch_size, hidden_size)
+        session_repr = final_seq_hidden[batch_indices, last_item_indices]
         return session_repr
 
     def calculate_infonce_loss(self, z1, z2):
-        # z1, z2: (batch_size, projection_dim)
         z1_norm = F.normalize(z1, dim=-1)
         z2_norm = F.normalize(z2, dim=-1)
         
-        sim_matrix = torch.matmul(z1_norm, z2_norm.T) / self.ssl_temperature # (batch_size, batch_size)
-        # Positive pairs are on the diagonal
+        sim_matrix = torch.matmul(z1_norm, z2_norm.T) / self.ssl_temperature
         labels = torch.arange(z1_norm.size(0)).long().to(z1_norm.device)
         
         loss_ssl = F.cross_entropy(sim_matrix, labels)
         return loss_ssl
 
 
-def train_test(model, train_data, test_data, opt, device): # test_data is now eval_data_loader
+def train_test(model, train_data, test_data, opt, device):
     model_module = model.module if isinstance(model, torch.nn.DataParallel) else model
 
     print(f'Start training epoch {opt.current_epoch_num}: {datetime.datetime.now()}')
@@ -366,7 +331,6 @@ def train_test(model, train_data, test_data, opt, device): # test_data is now ev
     slices = train_data.generate_batch(current_batch_size)
     if not slices:
         print("Warning: No batches generated from training data. Skipping training for this epoch.")
-        # Return eval metrics (0) and training losses (0)
         return 0.0, 0.0, 0.0, 0.0, 0.0 
 
     for i_slice_indices, j_batch_num in tqdm(zip(slices, np.arange(len(slices))), total=len(slices), desc=f"Epoch {opt.current_epoch_num} Training"):
@@ -385,61 +349,56 @@ def train_test(model, train_data, test_data, opt, device): # test_data is now ev
         alias_inputs_v2, A_v2, items_v2_unique, mask_v2_ssl, position_ids_v2 = data_v2_tuple
 
 
-        if items_v1_unique.size == 0 or items_v2_unique.size == 0: # Should be rare due to proc_utils._augment ensuring non-empty
+        if items_v1_unique.size == 0 or items_v2_unique.size == 0: 
             print(f"Skipping batch {j_batch_num} due to empty unique items array in v1 or v2.")
             continue
 
-        # --- View 1 (Main view for prediction loss, also part of SSL) ---
         items_v1_unique = torch.from_numpy(items_v1_unique).long().to(device)
         A_v1 = torch.from_numpy(A_v1).float().to(device)
         alias_inputs_v1 = torch.from_numpy(alias_inputs_v1).long().to(device)
-        mask_v1_ssl = torch.from_numpy(mask_v1_ssl).long().to(device) # This is the mask for the v1 sequence itself
+        mask_v1_ssl = torch.from_numpy(mask_v1_ssl).long().to(device) 
         position_ids_v1 = torch.from_numpy(position_ids_v1).long().to(device)
         time_diffs_v1 = torch.from_numpy(time_diffs_v1_np).float().to(device)
 
-        # --- View 2 (Augmented view for SSL) ---
         items_v2_unique = torch.from_numpy(items_v2_unique).long().to(device)
         A_v2 = torch.from_numpy(A_v2).float().to(device)
         alias_inputs_v2 = torch.from_numpy(alias_inputs_v2).long().to(device)
-        mask_v2_ssl = torch.from_numpy(mask_v2_ssl).long().to(device) # This is the mask for the v2 (augmented) sequence
+        mask_v2_ssl = torch.from_numpy(mask_v2_ssl).long().to(device) 
         position_ids_v2 = torch.from_numpy(position_ids_v2).long().to(device)
         time_diffs_v2 = torch.from_numpy(time_diffs_v2_np).float().to(device)
 
         targets_main = torch.from_numpy(targets_main_np).long().to(device)
-        mask_main_cuda = torch.from_numpy(mask_main_np).long().to(device) # Original sequence mask for main prediction
+        mask_main_cuda = torch.from_numpy(mask_main_np).long().to(device) 
         
-        # Attention mask for MHA layer in Attention_SessionGraph (True for padding)
-        # For v1, use the original mask (mask_main_cuda or equivalently mask_v1_ssl as v1 is not augmented by item drop)
-        seq_attention_mask_v1 = (mask_main_cuda == 0) 
+        # --- تغییر به دلیل حذف Multi-Head Attention نهایی ---
+        # sequence_mask_for_attention دیگر به forward پاس داده نمی‌شود
+        # اگر لایه MultiHeadAttention که از این ماسک استفاده می‌کرد حذف شده باشد،
+        # دیگر نیازی به ساخت یا پاس دادن آن نیست.
+        # اما اگر TimeAwareStarGNN یا بخش دیگری از آن استفاده می‌کند، باید بررسی شود.
+        # با بررسی TimeAwareStarGNN، ماسک در آنجا استفاده نمی‌شود.
+        # بنابراین، پارامتر sequence_mask_for_attention از فراخوانی مدل حذف می‌شود.
+        final_seq_hidden_v1, star_context_v1 = model(items_v1_unique, A_v1, alias_inputs_v1, position_ids_v1, time_diffs_v1, None) # ماسک حذف شد
+        # --- پایان تغییر ---
 
-        final_seq_hidden_v1, star_context_v1 = model(items_v1_unique, A_v1, alias_inputs_v1, position_ids_v1, time_diffs_v1, seq_attention_mask_v1)
 
-        if final_seq_hidden_v1.size(0) == 0: # Should not happen if batch has items
+        if final_seq_hidden_v1.size(0) == 0: 
             print(f"Skipping batch {j_batch_num} due to empty final_seq_hidden_v1.")
             continue
         
-        # Main prediction loss
-        scores_main = model_module.compute_scores(final_seq_hidden_v1, star_context_v1, mask_main_cuda) # Use original mask
-        loss_main = model_module.loss_function(scores_main, targets_main - 1) # Targets are 1-indexed, scores are 0-indexed relative to candidate items
+        scores_main = model_module.compute_scores(final_seq_hidden_v1, star_context_v1, mask_main_cuda) 
+        loss_main = model_module.loss_function(scores_main, targets_main - 1) 
 
-        # SSL Loss
-        session_emb_v1_ssl = model_module.get_session_embedding_for_ssl(final_seq_hidden_v1, mask_v1_ssl) # Use v1's own mask
+        session_emb_v1_ssl = model_module.get_session_embedding_for_ssl(final_seq_hidden_v1, mask_v1_ssl) 
 
-        # Attention mask for MHA layer for v2
-        seq_attention_mask_v2 = (mask_v2_ssl == 0) 
-        final_seq_hidden_v2, _ = model(items_v2_unique, A_v2, alias_inputs_v2, position_ids_v2, time_diffs_v2, seq_attention_mask_v2)
+        # --- تغییر به دلیل حذف Multi-Head Attention نهایی ---
+        final_seq_hidden_v2, _ = model(items_v2_unique, A_v2, alias_inputs_v2, position_ids_v2, time_diffs_v2, None) # ماسک حذف شد
+        # --- پایان تغییر ---
         
         if final_seq_hidden_v2.size(0) == 0:
             print(f"Skipping batch {j_batch_num} due to empty final_seq_hidden_v2.")
-            # If v2 becomes empty but v1 was not, we might only have main loss.
-            # This path should be rare due to _augment_sequence_item_dropout behavior.
-            # For simplicity, if this happens, we might skip SSL for this batch or handle it.
-            # Current logic: if final_seq_hidden_v2 is empty, SSL loss won't be computed correctly.
-            # A robust way is to check if session_emb_v2_ssl is valid before computing SSL loss.
-            # However, proc_utils ensures augmented sequences are not empty if original wasn't.
-            loss_ssl = torch.tensor(0.0).to(device) # Default if v2 is problematic
+            loss_ssl = torch.tensor(0.0).to(device) 
         else:
-            session_emb_v2_ssl = model_module.get_session_embedding_for_ssl(final_seq_hidden_v2, mask_v2_ssl) # Use v2's own mask
+            session_emb_v2_ssl = model_module.get_session_embedding_for_ssl(final_seq_hidden_v2, mask_v2_ssl) 
 
             projected_emb_v1 = model_module.projection_head_ssl(session_emb_v1_ssl)
             projected_emb_v2 = model_module.projection_head_ssl(session_emb_v2_ssl)
@@ -447,12 +406,11 @@ def train_test(model, train_data, test_data, opt, device): # test_data is now ev
 
         combined_loss = loss_main + model_module.ssl_weight * loss_ssl
 
-        # Gradient clipping (optional, but good practice)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) # max_norm can be opt.clip_grad_norm
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0) 
 
         combined_loss.backward()
         model_module.optimizer.step()
-        model_module.scheduler.step() # Step per batch for CosineAnnealingWarmRestarts
+        model_module.scheduler.step() 
 
         total_loss_epoch += combined_loss.item()
         total_main_loss_epoch += loss_main.item()
@@ -463,7 +421,6 @@ def train_test(model, train_data, test_data, opt, device): # test_data is now ev
             print('[%d/%d] Total Loss: %.4f (Main: %.4f, SSL: %.4f)' %
                   (j_batch_num, len(slices), combined_loss.item(), loss_main.item(), loss_ssl.item()))
 
-    # Calculate average losses for the epoch
     avg_total_loss_train = 0.0
     avg_main_loss_train = 0.0
     avg_ssl_loss_train = 0.0
@@ -475,12 +432,10 @@ def train_test(model, train_data, test_data, opt, device): # test_data is now ev
     else:
         print(f'\tNo batches were effectively processed in epoch {opt.current_epoch_num}.')
 
-    # --- Evaluation Phase ---
     print(f'Start Prediction/Evaluation for epoch {opt.current_epoch_num}: {datetime.datetime.now()}')
     model.eval()
     hit, mrr = [], []
-    # test_data here is the eval_data_loader (either validation or original test set)
-    slices_eval = test_data.generate_batch(opt.batchSize) # Use test_data (eval_data_loader)
+    slices_eval = test_data.generate_batch(opt.batchSize) 
     
     if not slices_eval:
         print("Warning: No batches generated from evaluation data. Skipping evaluation for this epoch.")
@@ -491,10 +446,8 @@ def train_test(model, train_data, test_data, opt, device): # test_data is now ev
             if len(i_eval_slice_indices) == 0:
                 continue
             
-            # For evaluation, SSL augmentation is not used (ssl_item_drop_prob=0.0)
-            # So v1 is the original sequence, v2 is identical to v1 (or can be ignored)
             data_v1_eval_tuple, _, targets_eval_np, mask_eval_np, time_diffs_eval_np, _ = test_data.get_slice(
-                i_eval_slice_indices, ssl_item_drop_prob=0.0 # No dropout for eval
+                i_eval_slice_indices, ssl_item_drop_prob=0.0 
             )
 
             alias_inputs_eval, A_eval, items_eval_unique, _, position_ids_eval = data_v1_eval_tuple
@@ -513,9 +466,10 @@ def train_test(model, train_data, test_data, opt, device): # test_data is now ev
             mask_eval_cuda = torch.from_numpy(mask_eval_np).long().to(device)
             targets_eval_cuda = torch.from_numpy(targets_eval_np).long().to(device)
             
-            seq_attention_mask_eval = (mask_eval_cuda == 0) # True for padding
-
-            final_seq_hidden_eval, star_context_eval = model(items_eval_unique, A_eval, alias_inputs_eval, position_ids_eval, time_diffs_eval, seq_attention_mask_eval)
+            # --- تغییر به دلیل حذف Multi-Head Attention نهایی ---
+            # پارامتر sequence_mask_for_attention از فراخوانی مدل حذف می‌شود.
+            final_seq_hidden_eval, star_context_eval = model(items_eval_unique, A_eval, alias_inputs_eval, position_ids_eval, time_diffs_eval, None) # ماسک حذف شد
+            # --- پایان تغییر ---
 
             if final_seq_hidden_eval.size(0) == 0:
                 print("Skipping evaluation batch due to empty final_seq_hidden_eval.")
@@ -523,16 +477,15 @@ def train_test(model, train_data, test_data, opt, device): # test_data is now ev
 
             scores_eval = model_module.compute_scores(final_seq_hidden_eval, star_context_eval, mask_eval_cuda)
 
-            # Get top K predictions
-            sub_scores_top20_indices = scores_eval.topk(20)[1] # Get indices of top 20 items
+            sub_scores_top20_indices = scores_eval.topk(20)[1] 
             sub_scores_top20_indices_np = sub_scores_top20_indices.cpu().detach().numpy()
             
-            targets_eval_for_metric_np = targets_eval_cuda.cpu().detach().numpy() - 1 # Adjust target to be 0-indexed for comparison with prediction indices
+            targets_eval_for_metric_np = targets_eval_cuda.cpu().detach().numpy() - 1 
 
             for score_row, target_item in zip(sub_scores_top20_indices_np, targets_eval_for_metric_np):
                 hit.append(np.isin(target_item, score_row))
                 if target_item in score_row:
-                    rank = np.where(score_row == target_item)[0][0] + 1 # Rank is 1-based
+                    rank = np.where(score_row == target_item)[0][0] + 1 
                     mrr.append(1.0 / rank)
                 else:
                     mrr.append(0.0)
