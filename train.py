@@ -198,8 +198,9 @@ def main(opt):
     train_data_loader = Dataset(train_data_raw_for_train, time_data_train_for_train, shuffle=True, opt=opt) #
     eval_data_loader = Dataset(eval_data_raw, time_data_for_eval, shuffle=False, opt=opt) #
     
-    actual_dataset_max_len = train_data_loader.len_max #
-    if opt.max_len == 0 or opt.max_len < actual_dataset_max_len: #
+    # استفاده از نام متغیر صحیح که در کلاس Dataset تعریف شده
+    actual_dataset_max_len = train_data_loader.len_max_for_padding #
+    if opt.max_len == 0 or (actual_dataset_max_len > 0 and opt.max_len < actual_dataset_max_len) : #
         print(f"Updating opt.max_len from {opt.max_len} to {actual_dataset_max_len}") #
         opt.max_len = actual_dataset_max_len #
     
@@ -303,13 +304,12 @@ def main(opt):
         # اضافه کردن weights_only=False برای بارگذاری صحیح
         checkpoint = torch.load(best_recall_model_path, map_location=device, weights_only=False)
         
-        # ایجاد یک نمونه جدید از مدل و بارگذاری وزن‌ها
-        # این اطمینان می‌دهد که با تنظیمات صحیح مدل (opt از چک‌پوینت) بارگذاری می‌شود
-        # اطمینان از اینکه opt از چک‌پوینت برای ایجاد نمونه مدل استفاده می‌شود
         opt_from_checkpoint = checkpoint['opt']
-        model_for_test_instance = Attention_SessionGraph(opt_from_checkpoint, n_node) # استفاده از n_node محاسبه شده در ابتدا
+        # هنگام ایجاد مدل برای تست، باید از n_node که در ابتدای تابع main محاسبه شده استفاده کنیم.
+        # opt_from_checkpoint ممکن است n_node نداشته باشد یا مقدار متفاوتی داشته باشد اگر از اجرای قبلی ذخیره شده باشد.
+        model_for_test_instance = Attention_SessionGraph(opt_from_checkpoint, n_node) 
 
-        if opt_from_checkpoint.n_gpu > 1 and torch.cuda.is_available(): # استفاده از n_gpu از چک‌پوینت
+        if opt_from_checkpoint.n_gpu > 1 and torch.cuda.is_available(): 
              model_for_test = torch.nn.DataParallel(model_for_test_instance)
         else:
             model_for_test = model_for_test_instance
@@ -319,9 +319,6 @@ def main(opt):
         
         print("Best model loaded successfully.")
 
-        # آماده‌سازی داده تست نهایی
-        # test_data_raw_orig و time_data_test_orig داده‌های تست اصلی هستند
-        # استفاده از opt_from_checkpoint برای ایجاد Dataset loader
         final_test_data_loader = Dataset(test_data_raw_orig, time_data_test_orig, shuffle=False, opt=opt_from_checkpoint)
         
         test_hit, test_mrr = evaluate_final_test(model_for_test, final_test_data_loader, opt_from_checkpoint, device)
@@ -393,12 +390,10 @@ def main(opt):
 
 
     plt.tight_layout()
-    # اطمینان از اینکه epoch_num برای نام فایل تعریف شده است (حتی اگر حلقه زود متوقف شود)
     last_epoch_num = epoch_num if 'epoch_num' in locals() and isinstance(epoch_num, int) else opt.epoch -1
     plot_filename = os.path.join(plot_dir, f'{opt.dataset}_training_plots_epoch_{last_epoch_num}.png')
     plt.savefig(plot_filename)
     print(f"Saved training plots to {plot_filename}")
-    # plt.show() # نمایش پلات‌ها ممکن است در محیط‌های بدون GUI مشکل‌ساز باشد، بنابراین کامنت شد.
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter) #
