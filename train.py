@@ -56,7 +56,6 @@ class Yoochoose_arg:
         self.position_emb_dim = 0
 
 def main(opt):
-    # تعیین مسیر دیتاست بر اساس نام دیتاست
     data_dir = f'datasets/{opt.dataset}/'
     model_save_dir = 'saved_star_models/'
     log_dir = 'logs_star/'
@@ -68,7 +67,6 @@ def main(opt):
 
     writer = SummaryWriter(log_dir=log_dir)
 
-    # انتخاب خودکار دستگاه
     device = torch.device("cuda" if torch.cuda.is_available() and opt.n_gpu > 0 else "cpu")
     if torch.cuda.is_available() and opt.n_gpu > 0:
         print(f"Using {torch.cuda.device_count()} GPU(s)")
@@ -76,7 +74,6 @@ def main(opt):
         print("Using CPU")
 
     try:
-        # بارگیری داده‌ها
         with open(os.path.join(data_dir, 'train.txt'), 'rb') as f:
             train_data_raw = pickle.load(f)
         with open(os.path.join(data_dir, 'test.txt'), 'rb') as f:
@@ -87,19 +84,16 @@ def main(opt):
         print(f"Error loading data: {e}")
         sys.exit(1)
 
-    # استخراج داده‌های زمانی
     time_data_train_orig = time_data_all['train_time_diffs']
     time_data_test_orig = time_data_all['test_time_diffs']
 
     if opt.validation:
-        # تقسیم داده‌های آموزشی
         (train_seqs, train_targets), (valid_seqs, valid_targets) = split_validation(
             train_data_raw, opt.valid_portion
         )
         train_data_raw = (train_seqs, train_targets)
         test_data_raw = (valid_seqs, valid_targets)
         
-        # تقسیم داده‌های زمانی با استفاده از همان شاخص‌ها
         n_samples = len(time_data_train_orig)
         indices = list(range(n_samples))
         np.random.shuffle(indices)
@@ -112,40 +106,33 @@ def main(opt):
         time_data_train = time_data_train_orig
         time_data_valid = time_data_test_orig
 
-    # ایجاد لودرهای داده
     train_data_loader = Dataset(train_data_raw, time_data_train, shuffle=True, opt=opt)
     test_data_loader = Dataset(test_data_raw, time_data_valid, shuffle=False, opt=opt)
     
-    # تنظیم حداکثر طول
     actual_dataset_max_len = train_data_loader.len_max
     if opt.max_len == 0 or opt.max_len < actual_dataset_max_len:
         print(f"Updating opt.max_len from {opt.max_len} to {actual_dataset_max_len}")
         opt.max_len = actual_dataset_max_len
     
-    # تنظیم ابعاد تعبیه
     if opt.position_emb_dim == 0: 
         opt.position_emb_dim = opt.hiddenSize
         
     if opt.ssl_projection_dim == 0:
         opt.ssl_projection_dim = opt.hiddenSize // 2
 
-    # تعیین تعداد آیتم‌ها
     if opt.dataset == 'diginetica': 
         n_node = 43098
     elif opt.dataset == 'yoochoose1_64': 
         n_node = 37484
     else: 
-        # محاسبه از روی داده‌ها
         all_items = set()
         for session in train_data_raw[0] + test_data_raw[0]:
             all_items.update(session)
-        n_node = len(all_items) + 1  # +1 برای padding
+        n_node = len(all_items) + 1
         print(f"Calculated n_node: {n_node}")
 
-    # ایجاد مدل
     model_instance = Attention_SessionGraph(opt, n_node)
 
-    # پشتیبانی چند GPU
     if opt.n_gpu > 1 and torch.cuda.is_available():
         print(f"Using {opt.n_gpu} GPUs with DataParallel")
         model = torch.nn.DataParallel(model_instance)
@@ -173,7 +160,6 @@ def main(opt):
         flag = 0
         saved_this_epoch_path = ""
 
-        # ذخیره بهترین مدل بر اساس Recall
         if current_hit >= best_result[0]:
             best_result[0] = current_hit
             best_epoch[0] = epoch_num
@@ -189,7 +175,6 @@ def main(opt):
             torch.save(state_to_save, saved_this_epoch_path)
             print(f"Saved best model (by Recall) to {saved_this_epoch_path}")
 
-        # ذخیره بهترین مدل بر اساس MRR
         if current_mrr >= best_result[1]:
             best_result[1] = current_mrr
             best_epoch[1] = epoch_num
@@ -208,7 +193,6 @@ def main(opt):
 
         print(f'Current Best: Recall@20: {best_result[0]:.4f} (Epoch {best_epoch[0]}), MRR@20: {best_result[1]:.4f} (Epoch {best_epoch[1]})')
         
-        # توقف زودهنگام
         bad_counter = 0 if flag else bad_counter + 1
         if bad_counter >= opt.patience:
             print(f"Early stopping after {opt.patience} epochs without improvement.")
@@ -220,19 +204,16 @@ def main(opt):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    # پیکربندی دیتاست
     parser.add_argument('--dataset', default='yoochoose1_64', choices=['diginetica', 'yoochoose1_64'], help='Dataset name')
     parser.add_argument('--validation', type=str2bool, default=True, help='Use validation split')
     parser.add_argument('--valid_portion', type=float, default=0.1, help='Validation split portion')
 
-    # هایپرپارامترهای مدل
     parser.add_argument('--hiddenSize', type=int, default=512, help='Hidden state dimension')
     parser.add_argument('--step', type=int, default=4, help='GNN propagation steps')
     parser.add_argument('--nonhybrid', type=str2bool, default=False, help='Use non-hybrid scoring')
     parser.add_argument('--max_len', type=int, default=0, help='Max session length (0=auto)')
     parser.add_argument('--position_emb_dim', type=int, default=0, help='Position embedding dim (0=hiddenSize)')
 
-    # هایپرپارامترهای آموزش
     parser.add_argument('--n_gpu', type=int, default=1, help='Num GPUs (0=CPU)')
     parser.add_argument('--batchSize', type=int, default=512, help='Batch size')
     parser.add_argument('--epoch', type=int, default=100, help='Number of epochs')
@@ -240,7 +221,6 @@ if __name__ == '__main__':
     parser.add_argument('--l2', type=float, default=1e-4, help='L2 penalty')
     parser.add_argument('--patience', type=int, default=20, help='Early stopping patience')
 
-    # یادگیری خودنظارتی
     parser.add_argument('--ssl_weight', type=float, default=0.5, help='SSL loss weight')
     parser.add_argument('--ssl_temperature', type=float, default=0.1, help='SSL temperature')
     parser.add_argument('--ssl_item_drop_prob', type=float, default=0.4, help='Item dropout prob')
@@ -248,10 +228,8 @@ if __name__ == '__main__':
 
     cmd_args = parser.parse_args()
     
-    # ایجاد شیء تنظیمات
     opt = argparse.Namespace()
     
-    # اعمال تنظیمات پیش‌فرض بر اساس دیتاست
     if cmd_args.dataset == 'diginetica':
         base_config = Diginetica_arg()
     elif cmd_args.dataset == 'yoochoose1_64':
@@ -260,16 +238,13 @@ if __name__ == '__main__':
         print(f"Error: Unknown dataset '{cmd_args.dataset}'")
         sys.exit(1)
     
-    # کپی تنظیمات پایه
     for key, value in vars(base_config).items():
         setattr(opt, key, value)
     
-    # بازنویسی با مقادیر خط فرمان
     for key, value in vars(cmd_args).items():
         if hasattr(opt, key):
             setattr(opt, key, value)
     
-    # تنظیم پارامترهای مشتق شده
     if opt.ssl_projection_dim == 0:
         opt.ssl_projection_dim = opt.hiddenSize // 2
 
