@@ -162,21 +162,10 @@ class Attention_SessionGraph(Module):
 
         self.layer_norm1 = nn.LayerNorm(self.hidden_size)
 
-        # --- Multi-Head Attention نهایی حذف شد ---
-        # self.attn = nn.MultiheadAttention(
-        #     embed_dim=self.hidden_size,
-        #     num_heads=8, 
-        #     dropout=0.3, 
-        #     batch_first=True
-        # )
-        # --- پایان حذف ---
-
-
         self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_two = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
         self.linear_three = nn.Linear(self.hidden_size, 1, bias=False)
         self.linear_transform = nn.Linear(self.hidden_size * 3, self.hidden_size, bias=True)
-        # self.linear_t = nn.Linear(self.hidden_size, self.hidden_size, bias=False) # همچنان استفاده نشده
 
         self.loss_function = nn.CrossEntropyLoss(label_smoothing=0.2)
 
@@ -260,15 +249,7 @@ class Attention_SessionGraph(Module):
 
         seq_hidden_time_aware, star_context = self.star_gnn(seq_hidden_with_pos, time_diffs_for_sequence)
         
-        # --- تغییر به دلیل حذف Multi-Head Attention نهایی ---
-        # خروجی TimeAwareStarGNN مستقیماً (پس از LayerNorm) استفاده می‌شود
         final_seq_hidden = self.layer_norm1(seq_hidden_time_aware)
-        # x = seq_hidden_time_aware
-        # x_norm = self.layer_norm1(x) 
-        # x_attn, _ = self.attn(x_norm, x_norm, x_norm, 
-        #                       key_padding_mask=sequence_mask_for_attention) 
-        # final_seq_hidden = x + self.dropout(x_attn) 
-        # --- پایان تغییر ---
 
         return final_seq_hidden, star_context
 
@@ -370,15 +351,7 @@ def train_test(model, train_data, test_data, opt, device):
         targets_main = torch.from_numpy(targets_main_np).long().to(device)
         mask_main_cuda = torch.from_numpy(mask_main_np).long().to(device) 
         
-        # --- تغییر به دلیل حذف Multi-Head Attention نهایی ---
-        # sequence_mask_for_attention دیگر به forward پاس داده نمی‌شود
-        # اگر لایه MultiHeadAttention که از این ماسک استفاده می‌کرد حذف شده باشد،
-        # دیگر نیازی به ساخت یا پاس دادن آن نیست.
-        # اما اگر TimeAwareStarGNN یا بخش دیگری از آن استفاده می‌کند، باید بررسی شود.
-        # با بررسی TimeAwareStarGNN، ماسک در آنجا استفاده نمی‌شود.
-        # بنابراین، پارامتر sequence_mask_for_attention از فراخوانی مدل حذف می‌شود.
-        final_seq_hidden_v1, star_context_v1 = model(items_v1_unique, A_v1, alias_inputs_v1, position_ids_v1, time_diffs_v1, None) # ماسک حذف شد
-        # --- پایان تغییر ---
+        final_seq_hidden_v1, star_context_v1 = model(items_v1_unique, A_v1, alias_inputs_v1, position_ids_v1, time_diffs_v1, None)
 
 
         if final_seq_hidden_v1.size(0) == 0: 
@@ -390,9 +363,7 @@ def train_test(model, train_data, test_data, opt, device):
 
         session_emb_v1_ssl = model_module.get_session_embedding_for_ssl(final_seq_hidden_v1, mask_v1_ssl) 
 
-        # --- تغییر به دلیل حذف Multi-Head Attention نهایی ---
-        final_seq_hidden_v2, _ = model(items_v2_unique, A_v2, alias_inputs_v2, position_ids_v2, time_diffs_v2, None) # ماسک حذف شد
-        # --- پایان تغییر ---
+        final_seq_hidden_v2, _ = model(items_v2_unique, A_v2, alias_inputs_v2, position_ids_v2, time_diffs_v2, None)
         
         if final_seq_hidden_v2.size(0) == 0:
             print(f"Skipping batch {j_batch_num} due to empty final_seq_hidden_v2.")
@@ -457,19 +428,16 @@ def train_test(model, train_data, test_data, opt, device):
                 print("Skipping evaluation batch due to empty unique items array.")
                 continue
 
-            items_eval_unique = torch.from_numpy(items_eval_unique).long().to(device)
-            A_eval = torch.from_numpy(A_eval).float().to(device)
-            alias_inputs_eval = torch.from_numpy(alias_inputs_eval).long().to(device)
-            position_ids_eval = torch.from_numpy(position_ids_eval).long().to(device)
-            time_diffs_eval = torch.from_numpy(time_diffs_eval_np).float().to(device)
+            items_eval_unique_tensor = torch.from_numpy(items_eval_unique).long().to(device) # Renamed for clarity
+            A_eval_tensor = torch.from_numpy(A_eval).float().to(device) # Renamed for clarity
+            alias_inputs_eval_tensor = torch.from_numpy(alias_inputs_eval).long().to(device) # Renamed for clarity
+            position_ids_eval_tensor = torch.from_numpy(position_ids_eval).long().to(device) # Renamed for clarity
+            time_diffs_eval_tensor = torch.from_numpy(time_diffs_eval_np).float().to(device) # Renamed for clarity
 
             mask_eval_cuda = torch.from_numpy(mask_eval_np).long().to(device)
             targets_eval_cuda = torch.from_numpy(targets_eval_np).long().to(device)
             
-            # --- تغییر به دلیل حذف Multi-Head Attention نهایی ---
-            # پارامتر sequence_mask_for_attention از فراخوانی مدل حذف می‌شود.
-            final_seq_hidden_eval, star_context_eval = model(items_eval_unique, A_eval, alias_inputs_eval, position_ids_eval, time_diffs_eval, None) # ماسک حذف شد
-            # --- پایان تغییر ---
+            final_seq_hidden_eval, star_context_eval = model(items_eval_unique_tensor, A_eval_tensor, alias_inputs_eval_tensor, position_ids_eval_tensor, time_diffs_eval_tensor, None)
 
             if final_seq_hidden_eval.size(0) == 0:
                 print("Skipping evaluation batch due to empty final_seq_hidden_eval.")
@@ -494,3 +462,13 @@ def train_test(model, train_data, test_data, opt, device):
     eval_mrr_metric = np.mean(mrr) * 100 if mrr else 0.0
     
     return eval_hit_metric, eval_mrr_metric, avg_total_loss_train, avg_main_loss_train, avg_ssl_loss_train
+
+# تابع جدید برای ارزیابی نهایی مدل
+def evaluate_model(model, eval_data_loader, opt, device):
+    model_module = model.module if isinstance(model, torch.nn.DataParallel) else model
+    model.eval()
+    hit, mrr = [], []
+    
+    slices_eval = eval_data_loader.generate_batch(opt.batchSize)
+    if not slices_eval:
+        print
