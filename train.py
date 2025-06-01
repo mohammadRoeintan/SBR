@@ -300,12 +300,16 @@ def main(opt):
     if best_recall_model_path and os.path.exists(best_recall_model_path):
         print("\n" + "="*50)
         print(f"Loading best model for final test evaluation from: {best_recall_model_path}")
-        checkpoint = torch.load(best_recall_model_path, map_location=device)
+        # اضافه کردن weights_only=False برای بارگذاری صحیح
+        checkpoint = torch.load(best_recall_model_path, map_location=device, weights_only=False)
         
         # ایجاد یک نمونه جدید از مدل و بارگذاری وزن‌ها
         # این اطمینان می‌دهد که با تنظیمات صحیح مدل (opt از چک‌پوینت) بارگذاری می‌شود
-        model_for_test_instance = Attention_SessionGraph(checkpoint['opt'], n_node)
-        if opt.n_gpu > 1 and torch.cuda.is_available():
+        # اطمینان از اینکه opt از چک‌پوینت برای ایجاد نمونه مدل استفاده می‌شود
+        opt_from_checkpoint = checkpoint['opt']
+        model_for_test_instance = Attention_SessionGraph(opt_from_checkpoint, n_node) # استفاده از n_node محاسبه شده در ابتدا
+
+        if opt_from_checkpoint.n_gpu > 1 and torch.cuda.is_available(): # استفاده از n_gpu از چک‌پوینت
              model_for_test = torch.nn.DataParallel(model_for_test_instance)
         else:
             model_for_test = model_for_test_instance
@@ -317,9 +321,10 @@ def main(opt):
 
         # آماده‌سازی داده تست نهایی
         # test_data_raw_orig و time_data_test_orig داده‌های تست اصلی هستند
-        final_test_data_loader = Dataset(test_data_raw_orig, time_data_test_orig, shuffle=False, opt=checkpoint['opt'])
+        # استفاده از opt_from_checkpoint برای ایجاد Dataset loader
+        final_test_data_loader = Dataset(test_data_raw_orig, time_data_test_orig, shuffle=False, opt=opt_from_checkpoint)
         
-        test_hit, test_mrr = evaluate_final_test(model_for_test, final_test_data_loader, checkpoint['opt'], device)
+        test_hit, test_mrr = evaluate_final_test(model_for_test, final_test_data_loader, opt_from_checkpoint, device)
         
         print("\n--- Final Test Set Evaluation Results ---")
         print(f'Recall@20 on Test Set: {test_hit:.4f}')
